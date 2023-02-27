@@ -5,22 +5,16 @@ import geopandas as gpd
 
 def clip_raster(input_raster, geodf, output_raster):
     """
-    clip_raster(
-        input_raster, 
-        geodf,
-        output_raster
-    )
-
-    Clips a raster using a geodf.
+    Clip a raster using a geopandas geodataframe. Wrapper for rasterio.mask.mask.
 
     Parameters
     ----------
     input_raster : str
-        path to input raster
+        Path to input raster
     geodf: Geopandas.DataFrame
         A geodataframe containing all the shapes you would like to clip out(must use the same crs as the input raster)
     output_raster : str
-        write path
+        Write path
     Returns
     -------
         None (writes clipping to the output_raster)
@@ -50,3 +44,4 @@ def clip_raster(input_raster, geodf, output_raster):
             dst.descriptions = src.descriptions
             for i in range(1, profile['count'] + 1):
                 dst.write_band(i, crop_img[i - 1])
+                

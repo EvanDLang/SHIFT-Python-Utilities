@@ -2,31 +2,29 @@ import rasterio as rio
 from rasterio.warp import calculate_default_transform, reproject
 from rasterio.enums import Resampling
 
-
 def reproject_raster(input_raster, output, crs=None, resampling_method='nearest', resolution=None):
     """
-    
-    Reprojects and north orients a raster.
+    Reprojects and north orients a raster. Wrapper for rasterio.warp.reproject
 
     Parameters
     ----------
     input_raster : str
-        path to input raster
+        Path to input raster
     
     output : str
-        write path
+        Write path
     
     crs : str (optional)
         destination crs (can be the same as input and raster will just north orient)
      
     resampling_method: str (optional)
-        string pertaining to the desired resampling method
+        String pertaining to the desired resampling method. Default: nearest
         
     resolution: tuple(float, float) (optional)
-        output resolution
+        Output resolution, Default: input raster resolution
     Returns
     -------
-        None (writes reprojection to the outpath)
+        None (Writes reprojection to the outpath)
     """
     
     assert resampling_method in dir(Resampling), f"Invalid resampling method, Supported methods: {[method for method in dir(Resampling) if '_' not in method]}"
