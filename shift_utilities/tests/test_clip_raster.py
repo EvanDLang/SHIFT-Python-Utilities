@@ -2,7 +2,7 @@ import pytest
 import rasterio as rio
 import geopandas as gpd
 import os
-from shift_utilities import clip_raster
+from shift_utilities.raster_utilities import clip_raster
 
 root_dir = os.path.split(os.path.dirname(os.path.abspath(__file__)))[0]
 root_dir = os.path.join(root_dir, "test_data")
