@@ -1,8 +1,6 @@
 Raster Utilities
 ================
 
-.. automodule:: raster_utilities.clip_raster
-   :members:
+.. autofunction:: raster_utilities.clip_raster
    
-.. automodule:: raster_utilities.reproject_raster
-   :members:
+.. autofunction:: raster_utilities.reproject_raster
