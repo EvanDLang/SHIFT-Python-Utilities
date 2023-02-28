@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(name='shift_python_utilities',
-      version=0.0.1,
+      version='0.0.1',
       url='http://github.com/isofit/isofit/',
       author='Evan Lang',
       author_email='evan.d.lang@nasa.gov',
