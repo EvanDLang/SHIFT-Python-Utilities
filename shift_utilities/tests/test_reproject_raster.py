@@ -37,7 +37,7 @@ def reproject_raster_driver(**kwargs):
     [
         (None, 'nearest', None, (2.6, -0., -0., -2.6), "EPSG:32616"),
         ("EPSG:32616", 'nearest', None, (2.6, -0. , -0., -2.6), "EPSG:32616"),
-        ("EPSG:4326", 'nearest', (3.7, 3.7), (3.7, -0., -0., -3.7), "OGC:CRS84"),
+        ("EPSG:4326", 'nearest', (3.7, 3.7), (3.7, -0., -0., -3.7), "EPSG:4326"),
     ],
 )
 

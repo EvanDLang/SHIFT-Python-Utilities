@@ -7,5 +7,9 @@ setup(name='shift_python_utilities',
       author_email='evan.d.lang@nasa.gov',
       description='Modules to help make common data operations easier',
       packages=find_packages(),
-      install_requires=[],
+      install_requires=[
+          'rasterio',
+          'geopandas',
+          'pytest'
+      ],
       python_requires='>=3.7')

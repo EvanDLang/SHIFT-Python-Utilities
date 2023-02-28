@@ -1,6 +1,9 @@
 channels:
   - conda-forge
 dependencies:
-  - geopandas
   - rasterio
+  - geopandas
   - pytest
+  - sphinx
+  - sphinx_rtd_theme
+
