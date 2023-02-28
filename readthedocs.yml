@@ -12,11 +12,7 @@ python:
    install:
       - method: pip
         path: .
-
-submodules:                                                                                                                   
-    include: all
     
 sphinx:
   configuration: docs/source/conf.py
 
-formats: []
