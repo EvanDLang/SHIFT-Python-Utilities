@@ -7,16 +7,8 @@ Welcome to SHIFT Python Utilities's documentation!
 ==================================================
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: Contents:
 
    raster_utilities
-
-   
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+   envi_kerchunk
