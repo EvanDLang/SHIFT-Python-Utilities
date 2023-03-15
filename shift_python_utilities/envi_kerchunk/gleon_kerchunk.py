@@ -1,8 +1,9 @@
 import numpy as np
 import fsspec
 import ujson
+import os
 
-# from shift_utilities.envi_kerchunk.utils import string_encode, read_envi_header, zarray_common, envi_dtypes, parse_date ,format_dict
+from shift_python_utilities.envi_kerchunk.utils import *
 
 
 def gleon_kerchunk(rfl_hdr_path, output_file):

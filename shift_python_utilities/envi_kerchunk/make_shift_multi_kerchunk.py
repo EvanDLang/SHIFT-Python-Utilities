@@ -1,4 +1,4 @@
-# from shift_utilities.envi_kerchunk import kerchunk_shift_rfl
+from .shift_kerchunk import kerchunk_shift_rfl
 import s3fs
 import fsspec
 import ujson
@@ -7,7 +7,7 @@ import os
 import re
 import datetime
 import numpy as np
-# from shift_utilities.envi_kerchunk.utils import string_encode, read_envi_header, zarray_common, envi_dtypes, parse_date ,format_dict
+from shift_python_utilities.envi_kerchunk.utils import *
 
 
 def make_shift_multi_kerchunk(input_directory, outfile):

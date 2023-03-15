@@ -6,7 +6,7 @@ import re
 import datetime
 import s3fs
 import pyproj
-# from shift_utilities.envi_kerchunk.utils import string_encode, read_envi_header, zarray_common, envi_dtypes, parse_date ,format_dict
+from shift_python_utilities.envi_kerchunk.utils import *
 
 def make_shift_multi(input_directory, output_file):
     """

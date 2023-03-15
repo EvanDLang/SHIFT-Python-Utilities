@@ -2,7 +2,8 @@ import numpy as np
 import fsspec
 import ujson
 import base64
-# from shift_utilities.envi_kerchunk.utils import string_encode, read_envi_header, zarray_common, envi_dtypes, parse_date ,format_dict
+import os
+from shift_python_utilities.envi_kerchunk.utils import *
 
 def make_envi_kerchunk(rdn_path, loc_path, obs_path, output_file):
     """
@@ -47,7 +48,7 @@ def make_envi_kerchunk(rdn_path, loc_path, obs_path, output_file):
 
     samps = np.arange(nsamp, dtype="<i4")
     samps_b64 = string_encode(samps)
-    sample_dict = format_dict(name="sample", data=samps_b64, dims=["sample"], chunks=[nsamp], shape=[nsamp], dtype="<i4")
+    samps_dict = format_dict(name="sample", data=samps_b64, dims=["sample"], chunks=[nsamp], shape=[nsamp], dtype="<i4")
 
     rdn_data = rdn_path.rstrip(".hdr")
     rdn_byte_order = {"0": "<", "1": ">"}[rdn_meta["byte order"]]

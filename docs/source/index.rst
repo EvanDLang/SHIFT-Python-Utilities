@@ -1,14 +1,22 @@
-.. SHIFT Python Utilities documentation master file, created by
-   sphinx-quickstart on Sun Feb 26 16:20:22 2023.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
+SHIFT Python Utilities
+======================
 
-Welcome to SHIFT Python Utilities's documentation!
-==================================================
+**The code base is in active development and could be subject to change. Additionally, outputs should be verified for correctness.**
+
+Installation
+------------
+
+Pull down the repo from github, navigate to the root directory and install using pip:
+
+::
+
+    git clone https://github.com/EvanDLang/SHIFT-Python-Utilities.git
+    cd SHIFT-Python-Utilities
+    pip install .
+
 
 .. toctree::
    :maxdepth: 1
    :caption: Contents:
 
    raster_utilities
-   envi_kerchunk

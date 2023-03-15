@@ -2,6 +2,7 @@ import fsspec
 import warnings
 import base64
 import numpy as np
+import ujson
 
 def string_encode(x):
     """

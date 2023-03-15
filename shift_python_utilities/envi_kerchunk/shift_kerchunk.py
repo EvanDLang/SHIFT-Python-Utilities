@@ -5,7 +5,7 @@ import os
 import re
 import datetime
 import pyproj
-# from shift_utilities.envi_kerchunk.utils import string_encode, read_envi_header, zarray_common, envi_dtypes, parse_date ,format_dict
+from shift_python_utilities.envi_kerchunk.utils  import *
 
 
 def kerchunk_shift_rfl(rfl_hdr_path, output_file):
