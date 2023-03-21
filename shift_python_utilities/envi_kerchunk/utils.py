@@ -199,7 +199,7 @@ def parse_map_info(metadata):
         "x_size": float(metadata["map info"][5]),
         "y_size": float(metadata["map info"][6]),
         "utm_zone": metadata["map info"][7],
-        "north_south": rfl_meta["map info"][8],
+        "north_south": metadata["map info"][8],
         "datum": metadata["map info"][9]
     }
         

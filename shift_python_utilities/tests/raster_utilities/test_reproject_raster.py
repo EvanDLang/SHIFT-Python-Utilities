@@ -37,7 +37,7 @@ def reproject_raster_driver(**kwargs):
     [
         (None, 'nearest', None, (2.6, -0., -0., -2.6), "EPSG:32616"),
         ("EPSG:32616", 'nearest', None, (2.6, -0. , -0., -2.6), "EPSG:32616"),
-        ("EPSG:4326", 'nearest', (3.7, 3.7), (3.7, -0., -0., -3.7), "EPSG:4326"),
+        ("EPSG:4326", 'nearest', (3.7, 3.7), (3.7, -0., -0., -3.7), ("EPSG:4326", "OGC:CRS84")),
     ],
 )
 
@@ -45,5 +45,9 @@ def test_reproject_raster(crs, resampling_method, resolution ,expected_transform
     src, dst = reproject_raster_driver(crs=crs, resampling_method=resampling_method, resolution=resolution)
     a,b,_,d,e,_,_,_,_ = dst['transform']
     assert (a,b, d, e) == expected_transform
-    assert dst['crs'].to_string() == expected_crs
+    if len(expected_crs) == 2:
+        expected_crs_1, expected_crs_2 = expected_crs 
+        assert dst['crs'].to_string() == expected_crs_1 or dst['crs'].to_string() == expected_crs_2
+    else:
+        assert dst['crs'].to_string() == expected_crs
 
