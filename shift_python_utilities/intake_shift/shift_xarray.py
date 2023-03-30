@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore", category=rasterio.errors.NotGeoreferencedWarni
 class ShiftXarray(RasterIOSource):
     name = 'SHIFT_xarray'
 
-    def __init__(self, urlpath, ortho=False, filter_bad_bands=False, chunks=None, concat_dim='concat_dim',
+    def __init__(self, urlpath, ortho=False, filter_bad_bands=False, subset=None, chunks={"band": 1}, concat_dim='concat_dim',
                  xarray_kwargs=None, metadata=None, path_as_pattern=True,
                  storage_options=None, **kwargs):
       
@@ -23,7 +23,8 @@ class ShiftXarray(RasterIOSource):
         
         self.ortho = ortho
         self.filter_bad_bands = filter_bad_bands
-    
+        self.subset = subset
+
     def _get_supporting_file(self, path, name):
         # parse filepath
         base, file = os.path.split(path)
@@ -49,6 +50,9 @@ class ShiftXarray(RasterIOSource):
         
     
     def _open_files(self, files):
+        """
+        Not currently supported
+        """
         das = [xr.open_rasterio(f, chunks=self.chunks, **self._kwargs)
                for f in files]
         out = xr.concat(das, dim=self.dim)
@@ -67,7 +71,7 @@ class ShiftXarray(RasterIOSource):
         return out.assign_coords(**coords).chunk(self.chunks)
     
     def _open_dataset(self):
-        import xarray as xr
+
         if self._can_be_local:
             files = fsspec.open_local(self.urlpath, **self.storage_options)
         else:
@@ -98,6 +102,9 @@ class ShiftXarray(RasterIOSource):
                     
             if self.filter_bad_bands and (not "igm" in files and not "glt" in files and not "obs" in files):
                 self._filter_bad_bands()
+            
+            if self.subset:
+                self._get_subset()
             
             if self.ortho and not "glt" in files:
                 self._orthorectify()
@@ -137,6 +144,9 @@ class ShiftXarray(RasterIOSource):
 
         return self._schema
     
+    def _get_subset(self):
+        self._ds = self._ds.isel(self.subset)
+    
     def _orthorectify(self):
         # get the path to the GLT file
         glt_path, data_var = self._get_supporting_file(self.urlpath, 'glt')
@@ -150,21 +160,60 @@ class ShiftXarray(RasterIOSource):
         
         # retrive data
         ds_array = self._ds.values
-        
-        # create an output array
-        out_ds = np.zeros((loc.shape[0], loc.shape[1], ds_array.shape[-1]), dtype=np.float32) + np.nan
+        ds_x, ds_y = self._ds.x.values.astype(int), self._ds.y.values.astype(int)
+
         
         # create a mask that filters o ut nodata values
         valid_glt = np.all(glt_array != -9999, axis=-1)
         # subtract 1 from all indicies so they are 0 based
         glt_array[valid_glt] -= 1 
         
-        # loop through the valid glt use indicides to transfer data to the correct position in the output array
-        for x in range(valid_glt.shape[0]):
-            if valid_glt[x,:].sum() != 0:
-                y = valid_glt[x,:]
-                out_ds[x, y, :] = ds_array[glt_array[x, y, 1], glt_array[x, y, 0], :]
-         
+        
+        # replace indicies outside of the sub-selection to nodata values for x and y
+        temp = glt_array[valid_glt, 1]
+        temp[np.logical_or((glt_array[valid_glt, 1] < min(ds_y)), (glt_array[valid_glt, 1] > max(ds_y)))] = -9999
+        glt_array[valid_glt, 1] = temp
+
+        temp = glt_array[valid_glt, 0]
+        temp[np.logical_or((glt_array[valid_glt, 0] < min(ds_x)), (glt_array[valid_glt, 0] > max(ds_x)))] = -9999
+        glt_array[valid_glt, 0] = temp
+        
+        # update the valid glt mask to capture new no data values
+        valid_glt = np.all(glt_array != -9999, axis=-1)
+        # update the indicies to reflect the subset range
+        glt_array[valid_glt, 1] -= min(ds_y)
+        glt_array[valid_glt, 0] -= min(ds_x)
+       
+        # Loop twice, on the first loop, determine the maximum length, min_y, max_y and the number of x's
+        # On the second loop use the metrics from the first loop to create a outdata set of the appropriate size
+        for get_shapes in [True, False]:
+            if get_shapes:
+                xs = []
+                min_y = 99999
+                max_y = -99999
+                max_len = -99999
+            else:
+                window = (min_y, max_y)
+                out_ds = np.zeros((len(xs), window[1] - window[0] + 1, ds_array.shape[-1]), dtype=np.float32)  + np.nan
+            for x in range(valid_glt.shape[0]):
+                if valid_glt[x,:].sum() != 0:
+                    y = valid_glt[x,:]
+
+                    if get_shapes:
+                        if len(ds_array[glt_array[x, y, 1], glt_array[x, y, 0], :]) > max_len:
+                            max_len = len(ds_array[glt_array[x, y, 1], glt_array[x, y, 0], :])
+
+                        if min(np.nonzero(y)[0]) < min_y:
+                            min_y = min(np.nonzero(y)[0])
+
+                        if max(np.nonzero(y)[0]) > max_y:
+                            max_y = max(np.nonzero(y)[0])
+
+                        xs += [x]
+                    else:
+                        out_ds[x - min(xs) ,y[window[0]:window[1] + 1], :] = ds_array[glt_array[x, y, 1], glt_array[x, y, 0], :]
+        
+
         GT = loc.transform
         
         dim_x = loc.x.shape[0]
@@ -178,7 +227,9 @@ class ShiftXarray(RasterIOSource):
         for y in np.arange(dim_y):
             y_geo = GT[5] + y * GT[4]
             lat[y] = y_geo
-        
+            
+        lon = lon[window[0]: window[1] + 1]
+        lat = lat[min(xs) : max(xs) + 1]
         
         # Set up the metadata for the output
         wvl = self._ds.wavelength.values
