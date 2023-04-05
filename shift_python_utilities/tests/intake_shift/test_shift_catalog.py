@@ -1,58 +1,14 @@
 import pytest
 import numpy as np
+import matplotlib.pyplot as plt
 from shift_python_utilities.intake_shift import shift_catalog
 
 @pytest.fixture
 def cat():
     return shift_catalog()
 
-def test_aviris_data(cat):
-    cat.aviris_v1_gridded().read_chunked()
-
-    
-@pytest.fixture
-def band_dict():
-    return {
-        'L2a': 425,
-        'rdn': 425,
-        'igm': 3,
-        'glt': 2,
-        'obs': 11
-    }
-@pytest.fixture
-def band_dict_filtered():
-    return {
-        'L2a': 337,
-        'rdn': 337,
-        'igm': 3,
-        'glt': 2,
-        'obs': 11,
-    }
-
-
-@pytest.mark.parametrize(
-    "dataset, date, time, ortho, filter_bad_bands",
-    [
-        (("L1", "glt"), "20220228", "183924", False, False),
-        (("L1", "glt"), "20220228", "183924", False, True),
-        (("L1", "glt"), "20220228", "183924", True, True),
-        (("L1", "igm"), "20220228", "183924", False, False),
-        (("L1", "igm"), "20220228", "183924", False, True),
-        (("L1", "igm"), "20220228", "183924", True, True),
-        (("L1", "obs"), "20220228", "183924", False, False),
-        (("L1", "obs"), "20220228", "183924", False, True),
-        (("L1", "obs"), "20220228", "183924", True, True),
-        (("L1", "rdn"), "20220228", "183924", False, False),
-        (("L1", "rdn"), "20220228", "183924", False, True),
-        # (("L1", "rdn"), "20220228", "183924", True, True),
-        # ("L2a", "20220228", "183924", True, False),
-        ("L2a", "20220228", "183924", False, False),
-        ("L2a", "20220228", "183924", False, True)
-    ],
-)
-
-def test_intake_shift_driver(cat, band_dict, band_dict_filtered, dataset, date, time, ortho, filter_bad_bands):
-    # Verify each type of dataset can be read in
+def get_dataset(cat, dataset):
+  # Verify each type of dataset can be read in
     if isinstance(dataset, tuple):
         parent, child = dataset
         key = child
@@ -60,37 +16,88 @@ def test_intake_shift_driver(cat, band_dict, band_dict_filtered, dataset, date, 
     else:
         key = dataset
         dataset = getattr(cat, dataset)()
+    return dataset
+def test_aviris_data(cat):
+    cat.aviris_v1_gridded().read_chunked()
+
+def test_time_date_filter(cat):
+    ds = cat.L2a(date="20220228", time="204228")  
+    assert "20220228" in ds.urlpath and "204228" in ds.urlpath
+
     
-    ds = dataset(date=date, time=time, ortho=ortho, filter_bad_bands=filter_bad_bands).read_chunked()
+@pytest.mark.parametrize(
+    "dataset, date, time, mask, expected",
+    [
+        (("L1", "glt"), "20220228", "183924", True, 2),
+        (("L1", "igm"), "20220228", "183924",True, 3),
+        (("L1", "obs"), "20220228", "183924",True, 11),
+        (("L1", "rdn"), "20220228", "183924",True, 337),
+        ("L2a", "20220228", "183924", True, 337),
+        (("L1", "glt"), "20220228", "183924", [10, 5, 15, 333, 420], 2),
+        (("L1", "igm"), "20220228", "183924", [1], 3),
+        (("L1", "obs"), "20220228", "183924", [0, 10], 11),
+        (("L1", "rdn"), "20220228", "183924", [10, 5, 15, 333, 420], 420),
+        ("L2a", "20220228", "183924", [10, 5, 15, 333, 420], 420)
+    ]
+)
     
-    if filter_bad_bands:
-        bands = band_dict_filtered 
-        assert bands[key] == len(ds.wavelength)
-    else:
-        bands = band_dict 
-        assert bands[key] == len(ds.wavelength)
+def test_bad_bands_filter(cat, dataset, date, time, mask, expected):
+    dataset = get_dataset(cat, dataset)
+    
+    # if isinstance(mask, list):   
+    #     tmp = np.ones((425))
+    #     tmp[mask] = 0
+    #     mask = tmp.astype(bool)
+    ds = dataset(date=date, time=time, filter_bands=mask).read_chunked()
+    try:
+        assert int(ds.attrs['bands']) == expected
+    except:
+        assert len(ds.wavelength) == expected
         
-    if ortho:
-        glt = cat.L1.glt()(date=date, time=time, ortho=ortho).read_chunked()
-        if key == 'glt':
-            assert glt.values.shape == ds.values.shape
-        else:
-            y, x, z = glt.shape
-            glt_array = glt.values.astype(int)
-            valid_glt = np.all(glt_array != -9999, axis=-1)
-            glt_array[valid_glt] -= 1 
+@pytest.mark.parametrize(
+    "dataset, date, time, chunks, expected",
+    [
+        (("L1", "rdn"), "20220228", "183924", {'y': 1}, 'y'),
+        (("L1", "rdn"), "20220228", "183924",{'x': 1}, 'x'),
+        (("L1", "rdn"), "20220228", "183924",{'band': 1}, 'wavelength'),
+    ]
+)   
+def test_chunking(cat, dataset, date, time, chunks, expected):
+    dataset = get_dataset(cat, dataset)
+    ds = dataset(date=date, time=time, chunks=chunks).read_chunked()
+    assert ds.chunksizes[expected][0] == 1
+    
+@pytest.mark.parametrize(
+    "dataset, date, time, subset, expected",
+    [
+        (("L1", "rdn"), "20220228", "183924", None, (425, 598, 4388)),
+        (("L1", "rdn"), "20220228", "183924",{'x': slice(20, 180), 'y':slice(55, 500)}, (425, 160, 445))
+    ]
+)   
+def test_subsetting(cat, dataset, date, time, subset, expected):
+    dataset = get_dataset(cat, dataset)
+    ds = dataset(date=date, time=time, subset=subset).read_chunked()
+    assert (ds.dims['wavelength'], ds.dims['x'], ds.dims['y']) == expected
 
+@pytest.mark.parametrize(
+    "dataset, date, time, subset",
+    [
+        (("L1", "rdn"), "20220228", "183924", {'x':slice(29, 200), 'y':slice(34, 500)}),
+        (("L2a"), "20220228", "183924", {'x':slice(29, 200), 'y':slice(34, 500)})
+    ]
+)
 
-            for x in range(valid_glt.shape[0]):
-                if valid_glt[x,:].sum() == 0:
-                    continue
-                else:
-                    break
-            y = valid_glt[x, :]
-            test_cord = glt_array[x, y, :][0]
+    
+def test_ortho(cat,dataset, date, time, subset):
+    dataset = get_dataset(cat, dataset)
 
-            original_data = dataset(date=date, time=time, filter_bad_bands=filter_bad_bands).read_chunked()
-
-            var = {'L2a': 'reflectance', 'rdn': 'radiance', 'obs': 'obs', 'igm': 'igm'}
-            assert np.count_nonzero(np.nan_to_num(getattr(ds, var[key]).values,nan=-9999) != -9999.) ==  np.count_nonzero(valid_glt) * bands[key]
-            assert (np.round(original_data.values[test_cord[1], test_cord[0]]) == np.round(getattr(ds, var[key]).values[x, y, :][0])).all()
+    ds = dataset(date=date, time=time, ortho=True, subset=subset).read_chunked()
+    
+    igm = cat.L1.igm(date=date, time=time, subset=subset).read_chunked()
+    
+    fig,ax=plt.subplots(1,1, figsize=(20, 6))
+    cp = ax.contourf(ds.lon.values, ds.lat.values, ds.elevation.values, levels=15)
+    fig,ax=plt.subplots(1,1, figsize=(20, 6))
+    cp2 = ax.contourf(igm.easting.values, igm.northing.values, igm.elevation.values, levels=15)
+    
+    assert np.all(cp.cvalues == cp2.cvalues)

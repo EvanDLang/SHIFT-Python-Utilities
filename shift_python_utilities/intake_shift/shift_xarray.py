@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore", category=rasterio.errors.NotGeoreferencedWarni
 class ShiftXarray(RasterIOSource):
     name = 'SHIFT_xarray'
 
-    def __init__(self, urlpath, ortho=False, filter_bad_bands=False, subset=None, chunks={"band": 1}, concat_dim='concat_dim',
+    def __init__(self, urlpath, ortho=False, filter_bands=False, subset=None, chunks={"y": 1}, concat_dim='concat_dim',
                  xarray_kwargs=None, metadata=None, path_as_pattern=True,
                  storage_options=None, **kwargs):
       
@@ -22,7 +22,7 @@ class ShiftXarray(RasterIOSource):
                  storage_options=storage_options, **kwargs)
         
         self.ortho = ortho
-        self.filter_bad_bands = filter_bad_bands
+        self.filter_bands = filter_bands
         self.subset = subset
 
     def _get_supporting_file(self, path, name):
@@ -44,9 +44,15 @@ class ShiftXarray(RasterIOSource):
 
         return s_path, data_var
       
-    def _filter_bad_bands(self):
-        from .bad_bands import bad_bands
-        self._ds = self._ds.isel(wavelength=bad_bands)
+    def _filter_bands(self):
+        if isinstance(self.filter_bands, np.ndarray) or isinstance(self.filter_bands, list):
+            mask = np.ones((int(self._ds.shape[-1])))
+            mask[self.filter_bands] = 0
+            mask = mask.astype(bool)
+            self._ds = self._ds.isel(wavelength=mask)
+        else:
+            from .bad_bands import bad_bands
+            self._ds = self._ds.isel(wavelength=bad_bands)
         
     
     def _open_files(self, files):
@@ -84,37 +90,56 @@ class ShiftXarray(RasterIOSource):
         else:
             self._ds = xr.open_rasterio(files, chunks=self.chunks,
                                         **self._kwargs).swap_dims({"band":"wavelength"}).drop("band").transpose('y', 'x', 'wavelength')
-            if (not "igm" in files and not "glt" in files) and not self.ortho:
-                igm_path, _ = self._get_supporting_file(files, 'igm')
-                
-                try:
-                    igm = xr.open_rasterio(igm_path, **self._kwargs).swap_dims({"band":"wavelength"}).drop("band").transpose('y', 'x', 'wavelength')
-
-                    lon = igm.isel(wavelength=0).values
-                    lat = igm.isel(wavelength=1).values
-                    elev = igm.isel(wavelength=2).values
-
-                    self._ds = self._ds.assign_coords({'lat':(['y','x'], lat)})
-                    self._ds = self._ds.assign_coords({'lon':(['y','x'], lon)})
-                    self._ds = self._ds.assign_coords({'elevation':(['y','x'], elev)})
-                except:
-                    print("Error configuring igm data")
-                    
-            if self.filter_bad_bands and (not "igm" in files and not "glt" in files and not "obs" in files):
-                self._filter_bad_bands()
+            
+        
+            if self.filter_bands is not False and (not "igm" in files and not "glt" in files and not "obs" in files):
+                self._filter_bands()
             
             if self.subset:
                 self._get_subset()
+                
+            if (not "igm" in files and not "glt" in files) and not self.ortho:
+                igm_path, _ = self._get_supporting_file(files, 'igm')
+            
+                igm = xr.open_rasterio(igm_path, chunks=self.chunks, **self._kwargs).swap_dims({"band":"wavelength"}).drop("band").transpose('y', 'x', 'wavelength')
+
+                if self.subset:
+                    igm = igm.isel(self.subset)
+
+                lon = igm.isel(wavelength=0).values
+                lat = igm.isel(wavelength=1).values
+                elev = igm.isel(wavelength=2).values
+
+                self._ds = self._ds.assign_coords({'lat':(['y','x'], lat)})
+                self._ds = self._ds.assign_coords({'lon':(['y','x'], lon)})
+                self._ds = self._ds.assign_coords({'elevation':(['y','x'], elev)})
             
             if self.ortho and not "glt" in files:
                 self._orthorectify()
             elif self.ortho and "glt" in files:
                 print("glt file cannot be orthorectified")
-                # to a dataset?
             else:
-                pass
-                # to a dataset?
-    
+                
+                if 'L2a' in files:
+                    self._ds = self._ds.to_dataset(name='reflectance')
+                elif 'rdn' in files:
+                    self._ds = self._ds.to_dataset(name='radiance')
+                elif 'obs' in files:
+                    self._ds = self._ds.to_dataset(dim='wavelength').rename({
+                        0: 'path_length',
+                        1: 'to_sensor_azimuth', 
+                        2:'to_sensor_zenith',
+                        3:'to_sun_azimuth',
+                        4:'to_sun_zenith',
+                        5:'solar_phase',
+                        6:'slope',
+                        7:'aspect',
+                        8:'cosine',
+                        9:'utc_time',
+                        10:'earth_sun_distance',
+                    })
+                elif "igm" in files:
+                    self._ds = self._ds.to_dataset(dim='wavelength').rename({0: 'easting', 1: 'northing', 2:'elevation'})
     
     def _get_schema(self):
         self.urlpath, *_ = self._get_cache(self.urlpath)
@@ -150,6 +175,14 @@ class ShiftXarray(RasterIOSource):
     def _orthorectify(self):
         # get the path to the GLT file
         glt_path, data_var = self._get_supporting_file(self.urlpath, 'glt')
+        igm_path, _ = self._get_supporting_file(self.urlpath, 'igm')
+        
+        igm = xr.open_rasterio(igm_path, chunks=self.chunks,**self._kwargs).swap_dims({"band":"wavelength"}).drop("band").transpose('y', 'x', 'wavelength')
+        
+        if self.subset:
+            igm = igm.isel(self.subset)
+        elev = igm.isel(wavelength=2).values
+
         
         # verify a glt file exists
         assert os.path.exists(glt_path), "No glt file exists, File cannot be orthorectified"
@@ -183,9 +216,9 @@ class ShiftXarray(RasterIOSource):
         # update the indicies to reflect the subset range
         glt_array[valid_glt, 1] -= min(ds_y)
         glt_array[valid_glt, 0] -= min(ds_x)
-       
+        
         # Loop twice, on the first loop, determine the maximum length, min_y, max_y and the number of x's
-        # On the second loop use the metrics from the first loop to create a outdata set of the appropriate size
+        # On the second loop use the info from the first loop to create a outdata set of the appropriate size
         for get_shapes in [True, False]:
             if get_shapes:
                 xs = []
@@ -195,6 +228,7 @@ class ShiftXarray(RasterIOSource):
             else:
                 window = (min_y, max_y)
                 out_ds = np.zeros((len(xs), window[1] - window[0] + 1, ds_array.shape[-1]), dtype=np.float32)  + np.nan
+                out_elev = np.zeros((len(xs), window[1] - window[0] + 1), dtype=np.float32)  + np.nan
             for x in range(valid_glt.shape[0]):
                 if valid_glt[x,:].sum() != 0:
                     y = valid_glt[x,:]
@@ -212,6 +246,7 @@ class ShiftXarray(RasterIOSource):
                         xs += [x]
                     else:
                         out_ds[x - min(xs) ,y[window[0]:window[1] + 1], :] = ds_array[glt_array[x, y, 1], glt_array[x, y, 0], :]
+                        out_elev[x - min(xs) ,y[window[0]:window[1] + 1]] = elev[glt_array[x, y, 1], glt_array[x, y, 0]]
         
 
         GT = loc.transform
@@ -255,7 +290,8 @@ class ShiftXarray(RasterIOSource):
         
         # create coords and data vars for output
         coords = {'lat':(['lat'], lat), 'lon':(['lon'], lon), 'wavelength':(['wavelength'], wvl)}
-        data_vars = {data_var:(['lat','lon','wavelength'], out_ds)}
+        data_vars = {data_var:(['lat','lon','wavelength'], out_ds), 'elevation':(['lat','lon'], out_elev)}
+        
         
         # create the output xarray dataset
         self._ds = xr.Dataset(data_vars=data_vars, coords=coords, attrs=metadata)
