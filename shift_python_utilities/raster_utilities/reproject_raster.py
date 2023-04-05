@@ -1,8 +1,9 @@
 import rasterio as rio
 from rasterio.warp import calculate_default_transform, reproject
 from rasterio.enums import Resampling
+import progressbar
 
-def reproject_raster(input_raster, output, crs=None, resampling_method='nearest', resolution=None):
+def reproject_raster(input_raster, output, crs=None, resampling_method='nearest', resolution=None, progress_bar=True):
     """
     Reprojects and north orients a raster. Wrapper for rasterio.warp.reproject
 
@@ -63,6 +64,8 @@ def reproject_raster(input_raster, output, crs=None, resampling_method='nearest'
             #set band descriptions
             dst.descriptions = src.descriptions
             # reproject and write each band one by one
+            if progress_bar:
+                bar = progressbar.ProgressBar(maxval=len(range(1, 1 + dst.count))).start()
             for i in range(1, 1 + dst.count):
                 rio.warp.reproject(
                     source=rio.band(src, i),
@@ -74,3 +77,5 @@ def reproject_raster(input_raster, output, crs=None, resampling_method='nearest'
                     dst_nodata=src.nodata,
                     resampling=resampling_method
                 )
+            if progress_bar:
+                bar.update(i)

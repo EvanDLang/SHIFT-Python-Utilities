@@ -42,7 +42,7 @@ def reproject_raster_driver(**kwargs):
 )
 
 def test_reproject_raster(crs, resampling_method, resolution ,expected_transform, expected_crs):
-    src, dst = reproject_raster_driver(crs=crs, resampling_method=resampling_method, resolution=resolution)
+    src, dst = reproject_raster_driver(crs=crs, resampling_method=resampling_method, resolution=resolution, progress_bar=False)
     a,b,_,d,e,_,_,_,_ = dst['transform']
     assert (a,b, d, e) == expected_transform
     if len(expected_crs) == 2:
