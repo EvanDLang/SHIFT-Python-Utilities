@@ -6,12 +6,13 @@ from intake_xarray.base import Schema
 import glob
 import os
 import xarray as xr
+import rioxarray as rxr
 import geopandas as gpd
 import affine
 import dask
 import warnings
-import rasterio as rio
-warnings.filterwarnings("ignore", category=rio.errors.NotGeoreferencedWarning)
+import rasterio
+warnings.filterwarnings("ignore", category=rasterio.errors.NotGeoreferencedWarning)
 dask.config.set({"array.slicing.split_large_chunks": False})
 
 class ShiftXarray(RasterIOSource):
@@ -98,8 +99,7 @@ class ShiftXarray(RasterIOSource):
             print('Multi-file loading is currently not supported')
         else:
             self._ds = xr.open_rasterio(files, chunks=self.chunks,
-                                        **self._kwargs).swap_dims({"band":"wavelength"}).drop("band").transpose('y', 'x', 'wavelength')
-            
+                                        **self._kwargs).swap_dims({"band":"wavelength"}).drop_vars("band").transpose('y', 'x', 'wavelength')
         
             if self.filter_bands is not False and (not "igm" in files and not "glt" in files and not "obs" in files):
                 self._filter_bands()
@@ -107,7 +107,7 @@ class ShiftXarray(RasterIOSource):
             if not "glt" in files and not 'igm' in files:
                 igm_path, _ = self._get_supporting_file(files, 'igm')
 
-                igm = xr.open_rasterio(igm_path, chunks=self.chunks, **self._kwargs).swap_dims({"band":"wavelength"}).drop("band").transpose('y', 'x', 'wavelength')
+                igm = xr.open_rasterio(igm_path, chunks=self.chunks, **self._kwargs).swap_dims({"band":"wavelength"}).drop_vars("band").transpose('y', 'x', 'wavelength')
 
                 lon = igm.isel(wavelength=0).values
                 lat = igm.isel(wavelength=1).values
@@ -347,7 +347,7 @@ class ShiftXarray(RasterIOSource):
         
         # create the output xarray dataset
         self._ds = xr.Dataset(data_vars=data_vars, coords=coords, attrs=metadata)
-        self._ds.rio.write_crs(rio.crs.CRS.from_string(loc.attrs['coordinate_system_string']), inplace=True)
+        self._ds.rio.write_crs(rasterio.crs.CRS.from_string(loc.attrs['coordinate_system_string']), inplace=True)
         self._ds.rio.write_transform(affine.Affine(*loc.attrs['transform']), inplace=True)
         self._ds.rio.set_spatial_dims('lon', 'lat', inplace=True)
         try:
