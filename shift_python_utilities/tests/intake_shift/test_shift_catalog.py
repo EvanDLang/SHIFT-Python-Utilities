@@ -1,7 +1,12 @@
 import pytest
 import numpy as np
+import geopandas as gpd
 import matplotlib.pyplot as plt
+import os
 from shift_python_utilities.intake_shift import shift_catalog
+
+root_dir = os.path.split(os.path.dirname(os.path.abspath(__file__)))[0]
+root_dir = os.path.join(root_dir, "test_data")
 
 @pytest.fixture
 def cat():
@@ -92,12 +97,37 @@ def test_ortho(cat,dataset, date, time, subset):
     dataset = get_dataset(cat, dataset)
 
     ds = dataset(date=date, time=time, ortho=True, subset=subset).read_chunked()
-    
+
     igm = cat.L1.igm(date=date, time=time, subset=subset).read_chunked()
-    
+
     fig,ax=plt.subplots(1,1, figsize=(20, 6))
     cp = ax.contourf(ds.lon.values, ds.lat.values, ds.elevation.values, levels=15)
     fig,ax=plt.subplots(1,1, figsize=(20, 6))
     cp2 = ax.contourf(igm.easting.values, igm.northing.values, igm.elevation.values, levels=15)
     
     assert np.all(cp.cvalues == cp2.cvalues)
+
+    
+
+@pytest.mark.parametrize(
+    "dataset, date, time, subset",
+    [
+        (("L2a"), "20220224", "200332", {'lat':[3812959.0852389 , 3810526.08057343], 'lon':[228610.68861488, 237298.1187180]}),
+        (("L2a"), "20220224", "200332", gpd.read_file(os.path.join(root_dir,"shp", "test.shp")))
+    ]
+)
+
+    
+def test_lat_lon_and_shape(cat,dataset, date, time, subset):
+    dataset = get_dataset(cat, dataset)
+
+    ds = dataset(date=date, time=time, ortho=True, subset=subset).read_chunked()
+
+#     igm = cat.L1.igm(date=date, time=time, ortho=True).read_chunked()
+
+#     fig,ax=plt.subplots(1,1, figsize=(20, 6))
+#     cp = ax.contourf(ds.lon.values, ds.lat.values, ds.elevation.values, levels=15)
+#     fig,ax=plt.subplots(1,1, figsize=(20, 6))
+#     cp2 = ax.contourf(igm.easting.values, igm.northing.values, igm.elevation.values, levels=15)
+    
+#     assert np.all(cp.cvalues == cp2.cvalues)

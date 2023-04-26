@@ -6,9 +6,13 @@ from intake_xarray.base import Schema
 import glob
 import os
 import xarray as xr
+import geopandas as gpd
+import affine
+import dask
 import warnings
-import rasterio
-warnings.filterwarnings("ignore", category=rasterio.errors.NotGeoreferencedWarning)
+import rasterio as rio
+warnings.filterwarnings("ignore", category=rio.errors.NotGeoreferencedWarning)
+dask.config.set({"array.slicing.split_large_chunks": False})
 
 class ShiftXarray(RasterIOSource):
     name = 'SHIFT_xarray'
@@ -16,7 +20,7 @@ class ShiftXarray(RasterIOSource):
     def __init__(self, urlpath, ortho=False, filter_bands=False, subset=None, chunks={"y": 1}, concat_dim='concat_dim',
                  xarray_kwargs=None, metadata=None, path_as_pattern=True,
                  storage_options=None, **kwargs):
-      
+        
         super().__init__(urlpath, chunks=chunks, concat_dim=concat_dim,
                  xarray_kwargs=xarray_kwargs, metadata=metadata, path_as_pattern=path_as_pattern,
                  storage_options=storage_options, **kwargs)
@@ -24,6 +28,11 @@ class ShiftXarray(RasterIOSource):
         self.ortho = ortho
         self.filter_bands = filter_bands
         self.subset = subset
+        
+        if isinstance(self.subset, gpd.GeoDataFrame):
+            assert self.ortho, "ortho must be set to True in order to subset with a shapefile"
+        
+        self.geodf = None
 
     def _get_supporting_file(self, path, name):
         # parse filepath
@@ -94,17 +103,11 @@ class ShiftXarray(RasterIOSource):
         
             if self.filter_bands is not False and (not "igm" in files and not "glt" in files and not "obs" in files):
                 self._filter_bands()
-            
-            if self.subset:
-                self._get_subset()
                 
-            if (not "igm" in files and not "glt" in files) and not self.ortho:
+            if not "glt" in files and not 'igm' in files:
                 igm_path, _ = self._get_supporting_file(files, 'igm')
-            
-                igm = xr.open_rasterio(igm_path, chunks=self.chunks, **self._kwargs).swap_dims({"band":"wavelength"}).drop("band").transpose('y', 'x', 'wavelength')
 
-                if self.subset:
-                    igm = igm.isel(self.subset)
+                igm = xr.open_rasterio(igm_path, chunks=self.chunks, **self._kwargs).swap_dims({"band":"wavelength"}).drop("band").transpose('y', 'x', 'wavelength')
 
                 lon = igm.isel(wavelength=0).values
                 lat = igm.isel(wavelength=1).values
@@ -113,13 +116,17 @@ class ShiftXarray(RasterIOSource):
                 self._ds = self._ds.assign_coords({'lat':(['y','x'], lat)})
                 self._ds = self._ds.assign_coords({'lon':(['y','x'], lon)})
                 self._ds = self._ds.assign_coords({'elevation':(['y','x'], elev)})
+              
+                    
+            
+            if self.subset is not None:
+                self._get_subset()
             
             if self.ortho and not "glt" in files:
                 self._orthorectify()
             elif self.ortho and "glt" in files:
                 print("glt file cannot be orthorectified")
             else:
-                
                 if 'L2a' in files:
                     self._ds = self._ds.to_dataset(name='reflectance')
                 elif 'rdn' in files:
@@ -170,20 +177,44 @@ class ShiftXarray(RasterIOSource):
         return self._schema
     
     def _get_subset(self):
+        
+        if isinstance(self.subset, gpd.GeoDataFrame):
+            
+            assert not 'glt' in self.urlpath and not'igm' in self.urlpath, "GLT and IGM files cannot be subset by shapefile"
+            
+            self.geodf = self.subset
+            lat_max = self.subset.bounds['maxy'].max()
+            lat_min = self.subset.bounds['miny'].min()
+            lon_max = self.subset.bounds['maxx'].max()
+            lon_min = self.subset.bounds['minx'].min()
+            self.subset ={'lat':(lat_min, lat_max), "lon": (lon_min, lon_max)}
+        
+        if "lat" in self.subset.keys() or "lon" in self.subset.keys():
+            
+            assert not 'glt' in self.urlpath and not'igm' in self.urlpath, "GLT and IGM files cannot be subset by lat/lon values"
+            
+            lat_min, lat_max = min(self.subset['lat']), max(self.subset['lat'])
+            lon_min, lon_max = min(self.subset['lon']), max(self.subset['lon'])
+            lon_mask = (self._ds.coords['lon'] > lon_min) & (self._ds.coords['lon'] < lon_max)
+            lat_mask = (self._ds.coords['lat'] > lat_min) & (self._ds.coords['lat'] < lat_max)
+            mask = (lon_mask) & (lat_mask)
+            
+            assert np.count_nonzero(mask), "invalid lat/lon subset values, make sure you are querying the correct image"
+            
+            inds = np.argwhere(mask.values)
+            y_min, y_max, x_min, x_max = inds[:, 0].min(), inds[:, 0].max(), inds[:, 1].min(), inds[:, 1].max()
+            self.subset = {'y':slice(y_min, y_max), "x": slice(x_min, x_max)}
+     
         self._ds = self._ds.isel(self.subset)
     
     def _orthorectify(self):
         # get the path to the GLT file
         glt_path, data_var = self._get_supporting_file(self.urlpath, 'glt')
-        igm_path, _ = self._get_supporting_file(self.urlpath, 'igm')
         
-        igm = xr.open_rasterio(igm_path, chunks=self.chunks,**self._kwargs).swap_dims({"band":"wavelength"}).drop("band").transpose('y', 'x', 'wavelength')
-        
-        if self.subset:
-            igm = igm.isel(self.subset)
-        elev = igm.isel(wavelength=2).values
-
-        
+        if 'igm' in self.urlpath:
+             elev = self._ds.isel(wavelength=2).values
+        else:
+            elev = self._ds.coords['elevation'].values
         # verify a glt file exists
         assert os.path.exists(glt_path), "No glt file exists, File cannot be orthorectified"
         
@@ -288,15 +319,42 @@ class ShiftXarray(RasterIOSource):
         }
         
         
-        # create coords and data vars for output
-        coords = {'lat':(['lat'], lat), 'lon':(['lon'], lon), 'wavelength':(['wavelength'], wvl)}
-        data_vars = {data_var:(['lat','lon','wavelength'], out_ds), 'elevation':(['lat','lon'], out_elev)}
+       
+        if data_var == 'obs':
+            coords = {'lat':(['lat'], lat), 'lon':(['lon'], lon)}
+            data_vars = {
+                'path_length':(['lat','lon'], out_ds[:, :, 0]),
+                'to_sensor_azimuth':(['lat','lon'], out_ds[:, :, 1]),
+                'to_sensor_zenith':(['lat','lon'], out_ds[:, :, 2]),
+                'to_sun_azimuth':(['lat','lon'], out_ds[:, :, 3]),
+                'to_sun_zenith':(['lat','lon'], out_ds[:, :, 4]),
+                'solar_phase':(['lat','lon'], out_ds[:, :, 5]),
+                'slope':(['lat','lon'], out_ds[:, :, 6]),
+                'aspect':(['lat','lon'], out_ds[:, :, 7]),
+                'cosine':(['lat','lon'], out_ds[:, :, 8]),
+                'utc_time':(['lat','lon'], out_ds[:, :, 9]),
+                'earth_sun_distance':(['lat','lon'], out_ds[:, :, 10]),
+                'elevation':(['lat','lon'], out_elev)
+            }
+        elif data_var == 'igm':
+            coords = {'lat':(['lat'], lat), 'lon':(['lon'], lon)}
+            data_vars = {'elevation':(['lat','lon'], out_elev)}
+        else:
+             # create coords and data vars for output
+            coords = {'lat':(['lat'], lat), 'lon':(['lon'], lon), 'wavelength':(['wavelength'], wvl)}
+            data_vars = {data_var:(['lat','lon','wavelength'], out_ds), 'elevation':(['lat','lon'], out_elev)}
         
         
         # create the output xarray dataset
         self._ds = xr.Dataset(data_vars=data_vars, coords=coords, attrs=metadata)
+        self._ds.rio.write_crs(rio.crs.CRS.from_string(loc.attrs['coordinate_system_string']), inplace=True)
+        self._ds.rio.write_transform(affine.Affine(*loc.attrs['transform']), inplace=True)
+        self._ds.rio.set_spatial_dims('lon', 'lat', inplace=True)
         try:
             fwhm = self._ds.fwhm.values 
             self._ds = self._ds.assign_coords(fwhm=("wavelength", fwhm))
         except:
             pass # no fwhm coord
+        
+        if self.geodf is not None:
+            self._ds = self._ds.rio.clip(self.geodf.geometry.values)
