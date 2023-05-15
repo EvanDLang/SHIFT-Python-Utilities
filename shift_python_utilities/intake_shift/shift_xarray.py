@@ -12,8 +12,28 @@ import affine
 import dask
 import warnings
 import rasterio
+from rasterio.crs import CRS
+import osgeo.osr as osr
+
 warnings.filterwarnings("ignore", category=rasterio.errors.NotGeoreferencedWarning)
 dask.config.set({"array.slicing.split_large_chunks": False})
+
+
+def get_epsg_code_and_map_info(description, map_info):
+    ind = description.find("UTM")
+    coord_system, _, zone, direction = description[57:].split(" ")
+    direction = False if direction == 'North' else True
+    epsg_code = 32600
+    epsg_code += int(zone)
+    if direction is True:
+        epsg_code += 100
+    
+    map_info = map_info.split(",")
+    map_info =[m.strip() for m in map_info]
+    map_info[7] = zone
+    map_info = ", ".join(map_info)
+
+    return CRS.from_epsg(epsg_code), map_info
 
 class ShiftXarray(RasterIOSource):
     name = 'SHIFT_xarray'
@@ -210,6 +230,7 @@ class ShiftXarray(RasterIOSource):
     def _orthorectify(self):
         # get the path to the GLT file
         glt_path, data_var = self._get_supporting_file(self.urlpath, 'glt')
+        igm_path, _ = self._get_supporting_file(self.urlpath, 'igm')        
         
         if 'igm' in self.urlpath:
              elev = self._ds.isel(wavelength=2).values
@@ -299,7 +320,9 @@ class ShiftXarray(RasterIOSource):
         
         # Set up the metadata for the output
         wvl = self._ds.wavelength.values
-   
+       
+        crs, map_info = get_epsg_code_and_map_info(xr.open_rasterio(igm_path).attrs['description'], loc.attrs['map_info'])
+        
         metadata = {
             'description': self._ds.attrs['description'],
             'lines': loc.attrs['lines'],
@@ -311,8 +334,8 @@ class ShiftXarray(RasterIOSource):
             'file_type': self._ds.attrs['file_type'],
             'transform': loc.attrs['transform'],
             'res': loc.attrs['res'],
-            'map info': loc.attrs['map_info'],
-            'coordinate_system_string': loc.attrs['coordinate_system_string'],
+            'map_info': map_info,
+            'coordinate_system_string': crs.to_wkt(),
             'nodatavals': self._ds.attrs['nodatavals'],
             'descriptions': wvl,
             'scales': self._ds.attrs['scales']
@@ -347,7 +370,7 @@ class ShiftXarray(RasterIOSource):
         
         # create the output xarray dataset
         self._ds = xr.Dataset(data_vars=data_vars, coords=coords, attrs=metadata)
-        self._ds.rio.write_crs(rasterio.crs.CRS.from_string(loc.attrs['coordinate_system_string']), inplace=True)
+        self._ds.rio.write_crs(crs, inplace=True)
         self._ds.rio.write_transform(affine.Affine(*loc.attrs['transform']), inplace=True)
         self._ds.rio.set_spatial_dims('lon', 'lat', inplace=True)
         try:
