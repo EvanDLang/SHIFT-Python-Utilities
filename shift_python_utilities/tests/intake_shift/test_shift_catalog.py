@@ -113,7 +113,7 @@ def test_ortho(cat,dataset, date, time, subset):
     "dataset, date, time, subset",
     [
         (("L2a"), "20220224", "200332", {'lat':[3812959.0852389 , 3810526.08057343], 'lon':[228610.68861488, 237298.1187180]}),
-        (("L2a"), "20220224", "200332", gpd.read_file(os.path.join(root_dir,"shp", "test.shp")))
+        (("L2a"), "20220224", "200332", gpd.read_file(os.path.join(root_dir,"intake_shift_shp", "intake_shift_shp.shp")))
     ]
 )
 
