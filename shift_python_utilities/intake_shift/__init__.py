@@ -8,8 +8,8 @@ from .shift_catalog import SHIFTCatalog as shift_catalog
 from .bad_bands import bad_bands
 
 try:
-    intake.register_driver('SHIFT-xarray', ShiftXarray)
+    intake.register_driver('SHIFT_xarray', ShiftXarray)
 except ValueError:
     pass
 
-register_container('SHIFT-xarray', ShiftXarray)
+register_container('SHIFT_xarray', ShiftXarray)
