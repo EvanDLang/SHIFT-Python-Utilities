@@ -1,0 +1,15 @@
+channels:
+  - conda-forge
+dependencies:
+  - rasterio
+  - geopandas
+  - pytest
+  - sphinx
+  - sphinx_rtd_theme
+  - fsspec
+  - numpy
+  - ujson
+  - kerchunk
+  - s3fs
+  - pyproj
+
