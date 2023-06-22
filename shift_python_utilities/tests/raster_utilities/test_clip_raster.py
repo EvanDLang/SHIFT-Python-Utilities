@@ -9,7 +9,7 @@ root_dir = os.path.join(root_dir, "test_data")
 
 @pytest.fixture
 def geodf():
-    shapefile = os.path.join(root_dir,"testing_shape_file", "raster_utilities_shp.shp")
+    shapefile = os.path.join(root_dir,"raster_utilities_shp", "raster_utilities_shp.shp")
     return gpd.read_file(shapefile)
 
 def clip_raster_driver(geodf):

@@ -89,7 +89,7 @@ class ShiftXarray(RasterIOSource):
         """
         Not currently supported
         """
-        das = [xr.open_rasterio(f, chunks=self.chunks, **self._kwargs)
+        das = [rxr.open_rasterio(f, chunks=self.chunks, **self._kwargs)
                for f in files]
         out = xr.concat(das, dim=self.dim)
 
@@ -118,7 +118,7 @@ class ShiftXarray(RasterIOSource):
             # self._ds = self._open_files(files)
             print('Multi-file loading is currently not supported')
         else:
-            self._ds = xr.open_rasterio(files, chunks=self.chunks,
+            self._ds = rxr.open_rasterio(files, chunks=self.chunks,
                                         **self._kwargs).swap_dims({"band":"wavelength"}).drop_vars("band").transpose('y', 'x', 'wavelength')
         
             if self.filter_bands is not False and (not "igm" in files and not "glt" in files and not "obs" in files):
@@ -127,7 +127,7 @@ class ShiftXarray(RasterIOSource):
             if not "glt" in files and not 'igm' in files:
                 igm_path, _ = self._get_supporting_file(files, 'igm')
 
-                igm = xr.open_rasterio(igm_path, chunks=self.chunks, **self._kwargs).swap_dims({"band":"wavelength"}).drop_vars("band").transpose('y', 'x', 'wavelength')
+                igm = rxr.open_rasterio(igm_path, chunks=self.chunks, **self._kwargs).swap_dims({"band":"wavelength"}).drop_vars("band").transpose('y', 'x', 'wavelength')
 
                 lon = igm.isel(wavelength=0).values
                 lat = igm.isel(wavelength=1).values
@@ -240,7 +240,7 @@ class ShiftXarray(RasterIOSource):
         assert os.path.exists(glt_path), "No glt file exists, File cannot be orthorectified"
         
         # parse glt file
-        loc = xr.open_rasterio(glt_path).transpose('y', 'x', 'band')
+        loc = rxr.open_rasterio(glt_path).transpose('y', 'x', 'band')
         glt_array = loc.values.astype(int)
         
         # retrive data
@@ -301,7 +301,7 @@ class ShiftXarray(RasterIOSource):
                         out_elev[x - min(xs) ,y[window[0]:window[1] + 1]] = elev[glt_array[x, y, 1], glt_array[x, y, 0]]
         
 
-        GT = loc.transform
+        GT = loc.rio.transform()
         
         dim_x = loc.x.shape[0]
         dim_y = loc.y.shape[0]
@@ -321,24 +321,17 @@ class ShiftXarray(RasterIOSource):
         # Set up the metadata for the output
         wvl = self._ds.wavelength.values
        
-        crs, map_info = get_epsg_code_and_map_info(xr.open_rasterio(igm_path).attrs['description'], loc.attrs['map_info'])
+        crs, map_info = get_epsg_code_and_map_info(rxr.open_rasterio(igm_path).attrs['description'], loc.attrs['map_info'])
         
         metadata = {
-            'description': self._ds.attrs['description'],
-            'lines': loc.attrs['lines'],
-            'samples': loc.attrs['samples'],
-            'is_tiled ': self._ds.attrs['is_tiled'],           
+            'description': self._ds.attrs['description'],        
             'bands': self._ds.attrs['bands'],
             'interleave': 'bil',
             'data_type': self._ds.attrs['data_type'],
             'file_type': self._ds.attrs['file_type'],
-            'transform': loc.attrs['transform'],
-            'res': loc.attrs['res'],
             'map_info': map_info,
             'coordinate_system_string': crs.to_wkt(),
-            'nodatavals': self._ds.attrs['nodatavals'],
-            'descriptions': wvl,
-            'scales': self._ds.attrs['scales']
+            'wavelength': wvl,
         }
         
         
@@ -371,7 +364,7 @@ class ShiftXarray(RasterIOSource):
         # create the output xarray dataset
         self._ds = xr.Dataset(data_vars=data_vars, coords=coords, attrs=metadata)
         self._ds.rio.write_crs(crs, inplace=True)
-        self._ds.rio.write_transform(affine.Affine(*loc.attrs['transform']), inplace=True)
+        self._ds.rio.write_transform(GT, inplace=True)
         self._ds.rio.set_spatial_dims('lon', 'lat', inplace=True)
         try:
             fwhm = self._ds.fwhm.values 
