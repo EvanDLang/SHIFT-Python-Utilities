@@ -3,6 +3,8 @@ import numpy as np
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import os
+os.environ['USE_PYGEOS'] = '0'
+import geopandas as gpd
 from shift_python_utilities.intake_shift import shift_catalog
 
 root_dir = os.path.split(os.path.dirname(os.path.abspath(__file__)))[0]
@@ -22,6 +24,7 @@ def get_dataset(cat, dataset):
         key = dataset
         dataset = getattr(cat, dataset)()
     return dataset
+
 def test_aviris_data(cat):
     cat.aviris_v1_gridded().read_chunked()
 
@@ -49,11 +52,9 @@ def test_time_date_filter(cat):
 def test_bad_bands_filter(cat, dataset, date, time, mask, expected):
     dataset = get_dataset(cat, dataset)
     
-    # if isinstance(mask, list):   
-    #     tmp = np.ones((425))
-    #     tmp[mask] = 0
-    #     mask = tmp.astype(bool)
+  
     ds = dataset(date=date, time=time, filter_bands=mask).read_chunked()
+    
     try:
         assert int(ds.attrs['bands']) == expected
     except:
@@ -110,24 +111,61 @@ def test_ortho(cat,dataset, date, time, subset):
     
 
 @pytest.mark.parametrize(
-    "dataset, date, time, subset",
+    "dataset, date, time, ortho, subset, expected",
     [
-        (("L2a"), "20220224", "200332", {'lat':[3812959.0852389 , 3810526.08057343], 'lon':[228610.68861488, 237298.1187180]}),
-        (("L2a"), "20220224", "200332", gpd.read_file(os.path.join(root_dir,"intake_shift_shp", "intake_shift_shp.shp")))
+        (("L2a"), "20220224", "200332", True, {'lat':[3812959.0852389 , 3810526.08057343], 'lon':[228610.68861488, 237298.1187180]}, ("reflectance", (1029, 1964, 425))), 
+        (("L2a"), "20220224", "200332", False, {'lat':[3812959.0852389 , 3810526.08057343], 'lon':[228610.68861488, 237298.1187180]}, ("reflectance", (2091, 577, 425))),
+        (("L1", "rdn"), "20220224", "200332", True, {'lat':[3812959.0852389 , 3810526.08057343], 'lon':[228610.68861488, 237298.1187180]}, ("radiance", (1029, 1964, 425))), 
+        (("L1", "rdn"), "20220224", "200332", False, {'lat':[3812959.0852389 , 3810526.08057343], 'lon':[228610.68861488, 237298.1187180]}, ("radiance", (2091, 577, 425))),
+        (("L1", "igm"), "20220224", "200332", True, {'lat':[3812959.0852389 , 3810526.08057343], 'lon':[228610.68861488, 237298.1187180]}, ("elevation", (1029, 1964))), 
+        (("L1", "igm"), "20220224", "200332", False, {'lat':[3812959.0852389 , 3810526.08057343], 'lon':[228610.68861488, 237298.1187180]}, ("elevation", (2091, 577))),
+        (("L1", "obs"), "20220224", "200332", True, {'lat':[3812959.0852389 , 3810526.08057343], 'lon':[228610.68861488, 237298.1187180]}, ("path_length", (1029, 1964))), 
+        (("L1", "obs"), "20220224", "200332", False, {'lat':[3812959.0852389 , 3810526.08057343], 'lon':[228610.68861488, 237298.1187180]}, ("path_length", (2091, 577))),
+        (("L1", "glt"), "20220224", "200332", False, {'lat':[3812959.0852389 , 3810526.08057343], 'lon':[228610.68861488, 237298.1187180]}, (1311, 505, 2))
     ]
 )
 
     
-def test_lat_lon_and_shape(cat,dataset, date, time, subset):
+def test_lat_lon(cat, dataset, date, time, ortho, subset, expected):
+    ds = get_dataset(cat, dataset)
+    ds = ds(date=date, time=time, ortho=ortho, subset=subset).read_chunked()
+    if "glt" in dataset:
+        assert ds.shape == expected
+    else:
+        attr, shp = expected
+        assert getattr(ds, attr).shape == shp
+ 
+
+@pytest.mark.parametrize(
+    "dataset, date, time, ortho, subset, expected",
+    [
+        (("L2a"), "20220224", "200332", True, os.path.join(root_dir,"intake_shift_shp", "intake_shift_shp.shp"), ("reflectance", (383, 298, 425))),
+        (("L2a"), "20220224", "200332", True, gpd.read_file(os.path.join(root_dir,"intake_shift_shp", "intake_shift_shp.shp")), ("reflectance", (383, 298, 425))),
+        (("L1", "rdn"), "20220224", "200332", True, gpd.read_file(os.path.join(root_dir,"intake_shift_shp", "intake_shift_shp.shp")), ("radiance", (383, 298, 425))), 
+        (("L1", "igm"), "20220224", "200332", True, gpd.read_file(os.path.join(root_dir,"intake_shift_shp", "intake_shift_shp.shp")), ("elevation", (383, 298))), 
+        (("L1", "obs"), "20220224", "200332", True, gpd.read_file(os.path.join(root_dir,"intake_shift_shp", "intake_shift_shp.shp")), ("path_length", (383, 298)))
+    ]
+)
+
+
+def test_shape(cat, dataset, date, time, ortho, subset, expected):
     dataset = get_dataset(cat, dataset)
+  
+    ds = dataset(date=date, time=time, ortho=ortho, subset=subset).read_chunked()
+    attr, shp = expected
+    assert getattr(ds, attr).shape == shp
 
-    ds = dataset(date=date, time=time, ortho=True, subset=subset).read_chunked()
-
-#     igm = cat.L1.igm(date=date, time=time, ortho=True).read_chunked()
-
-#     fig,ax=plt.subplots(1,1, figsize=(20, 6))
-#     cp = ax.contourf(ds.lon.values, ds.lat.values, ds.elevation.values, levels=15)
-#     fig,ax=plt.subplots(1,1, figsize=(20, 6))
-#     cp2 = ax.contourf(igm.easting.values, igm.northing.values, igm.elevation.values, levels=15)
+@pytest.mark.parametrize(
+    "dataset, date, time, ortho, subset",
+    [
+        (("L2a"), "20220224", "200332", False, gpd.read_file(os.path.join(root_dir,"intake_shift_shp", "intake_shift_shp.shp"))),
+        (("L1", "glt"), "20220224", "200332", True, gpd.read_file(os.path.join(root_dir,"intake_shift_shp", "intake_shift_shp.shp")))
+    ]
+)
     
-#     assert np.all(cp.cvalues == cp2.cvalues)
+def test_shape_exception(cat,dataset, date, time, ortho, subset):
+    dataset = get_dataset(cat, dataset)
+    with pytest.raises(Exception):
+        ds = dataset(date=date, time=time, ortho=ortho, subset=subset).read_chunked()
+
+    
