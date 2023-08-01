@@ -48,7 +48,7 @@ def get_map_info(map_info, crs):
 class ShiftXarray(RasterIOSource):
     name = 'SHIFT_xarray'
 
-    def __init__(self, urlpath, ortho=False, filter_bands=False, subset=None, chunks='auto', concat_dim='concat_dim',
+    def __init__(self, urlpath, ortho=False, filter_bands=False, subset=None, chunks={'y': 1}, concat_dim='concat_dim',
                  xarray_kwargs=None, metadata=None, path_as_pattern=True,
                  storage_options=None, **kwargs):
         """
