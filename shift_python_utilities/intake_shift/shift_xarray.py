@@ -276,14 +276,21 @@ class ShiftXarray(RasterIOSource):
             inds = np.argwhere(mask.values)
             y_min, y_max, x_min, x_max = inds[:, 0].min(), inds[:, 0].max(), inds[:, 1].min(), inds[:, 1].max()
             self.subset = {'y':slice(y_min, y_max), "x": slice(x_min, x_max)}
-        
+            
         # subset the dataset using the indicies
         self._ds = self._ds.isel(self.subset)
+    
+    def _subset_glt(self, glt):
+
+        y_inds = xr.DataArray(np.arange(self.subset['y'].start, self.subset['y'].stop, 1))
+        x_inds = xr.DataArray(np.arange(self.subset['x'].start, self.subset['x'].stop, 1))
+        
+        return glt.where(glt[:, :, 1].compute().isin(y_inds) & (glt[:, :, 0].compute().isin(x_inds)), drop=True)
+        
     
     def _orthorectify(self):
         # get the path to the GLT file
         glt_path, data_var = self._get_supporting_file(self.urlpath, 'glt')
-            
         
         if 'igm' in self.urlpath:
              elev = self._ds.isel(wavelength=2).values
@@ -293,71 +300,40 @@ class ShiftXarray(RasterIOSource):
         assert os.path.exists(glt_path), "No glt file exists, File cannot be orthorectified"
         
         # parse glt file
-        loc = rxr.open_rasterio(glt_path).transpose('y', 'x', 'band')
-        glt_array = loc.values.astype(int)
-        
-        # retrive data
-        ds_array = self._ds.values
-        ds_x, ds_y = self._ds.x.values.astype(int), self._ds.y.values.astype(int)
+        glt = rxr.open_rasterio(glt_path).transpose('y', 'x', 'band')
+        # glt_array = glt.values.astype(int)
 
+        if self.subset is not None:
+            glt = self._subset_glt(glt)
+        glt_array = glt.fillna(-9999).astype(int).values
         
         # create a mask that filters o ut nodata values
         valid_glt = np.all(glt_array != -9999, axis=-1)
-        # subtract 1 from all indicies so they are 0 based
-        glt_array[valid_glt] -= 1 
         
+        # create output datasets
+        out_ds = np.zeros((glt_array.shape[0], glt_array.shape[1], self._ds.shape[-1]), dtype=np.float32)  + np.nan
+        out_elev = np.zeros((glt_array.shape[0], glt_array.shape[1]), dtype=np.float32)  + np.nan
+           
+        # load data into memory
+        ds_array = self._ds.values
         
-        # replace indicies outside of the sub-selection to nodata values for x and y
-        temp = glt_array[valid_glt, 1]
-        temp[np.logical_or((glt_array[valid_glt, 1] < min(ds_y)), (glt_array[valid_glt, 1] > max(ds_y)))] = -9999
-        glt_array[valid_glt, 1] = temp
-
-        temp = glt_array[valid_glt, 0]
-        temp[np.logical_or((glt_array[valid_glt, 0] < min(ds_x)), (glt_array[valid_glt, 0] > max(ds_x)))] = -9999
-        glt_array[valid_glt, 0] = temp
-        
-        # update the valid glt mask to capture new no data values
-        valid_glt = np.all(glt_array != -9999, axis=-1)
-        # update the indicies to reflect the subset range
+        # adjust indicies based on the subset
+        ds_x, ds_y = self._ds.x.values.astype(int), self._ds.y.values.astype(int)
         glt_array[valid_glt, 1] -= min(ds_y)
         glt_array[valid_glt, 0] -= min(ds_x)
-        
-        # Loop twice, on the first loop, determine the maximum length, min_y, max_y and the number of x's
-        # On the second loop use the info from the first loop to create a outdata set of the appropriate size
-        for get_shapes in [True, False]:
-            if get_shapes:
-                xs = []
-                min_y = 99999
-                max_y = -99999
-                max_len = -99999
-            else:
-                window = (min_y, max_y)
-                out_ds = np.zeros((len(xs), window[1] - window[0] + 1, ds_array.shape[-1]), dtype=np.float32)  + np.nan
-                out_elev = np.zeros((len(xs), window[1] - window[0] + 1), dtype=np.float32)  + np.nan
-            for x in range(valid_glt.shape[0]):
-                if valid_glt[x,:].sum() != 0:
-                    y = valid_glt[x,:]
 
-                    if get_shapes:
-                        if len(ds_array[glt_array[x, y, 1], glt_array[x, y, 0], :]) > max_len:
-                            max_len = len(ds_array[glt_array[x, y, 1], glt_array[x, y, 0], :])
-
-                        if min(np.nonzero(y)[0]) < min_y:
-                            min_y = min(np.nonzero(y)[0])
-
-                        if max(np.nonzero(y)[0]) > max_y:
-                            max_y = max(np.nonzero(y)[0])
-
-                        xs += [x]
-                    else:
-                        out_ds[x - min(xs) ,y[window[0]:window[1] + 1], :] = ds_array[glt_array[x, y, 1], glt_array[x, y, 0], :]
-                        out_elev[x - min(xs) ,y[window[0]:window[1] + 1]] = elev[glt_array[x, y, 1], glt_array[x, y, 0]]
+        # broadcast values
+        for x in range(valid_glt.shape[0]):
+            if valid_glt[x,:].sum() != 0:
+                y = valid_glt[x,:]
+                out_ds[x, y, :] = ds_array[glt_array[x, y, 1], glt_array[x, y, 0], :]
+                out_elev[x, y] = elev[glt_array[x, y, 1], glt_array[x, y, 0]]
         
         # get the transform and create the coords
-        GT = loc.rio.transform()
+        GT = glt.rio.transform()
         
-        dim_x = loc.x.shape[0]
-        dim_y = loc.y.shape[0]
+        dim_x = glt.x.shape[0]
+        dim_y = glt.y.shape[0]
         lon = np.zeros(dim_x)
         lat = np.zeros(dim_y)
         
@@ -367,14 +343,11 @@ class ShiftXarray(RasterIOSource):
         for y in np.arange(dim_y):
             y_geo = GT[5] + y * GT[4]
             lat[y] = y_geo
-            
-        lon = lon[window[0]: window[1] + 1]
-        lat = lat[min(xs) : max(xs) + 1]
         
         # Set up the metadata for the output
         wvl = self._ds.wavelength.values
        
-        map_info = get_map_info(loc.attrs['map_info'], self.crs)
+        map_info = get_map_info(glt.attrs['map_info'], self.crs)
         
         metadata = {
             'description': self._ds.attrs['description'],        
@@ -387,38 +360,35 @@ class ShiftXarray(RasterIOSource):
             'wavelength': wvl,
         }
         
-        
-       
         if data_var == 'obs':
-            coords = {'lat':(['lat'], lat), 'lon':(['lon'], lon)}
+            coords = {'y':(['y'], lat), 'x':(['x'], lon)}
             data_vars = {
-                'path_length':(['lat','lon'], out_ds[:, :, 0]),
-                'to_sensor_azimuth':(['lat','lon'], out_ds[:, :, 1]),
-                'to_sensor_zenith':(['lat','lon'], out_ds[:, :, 2]),
-                'to_sun_azimuth':(['lat','lon'], out_ds[:, :, 3]),
-                'to_sun_zenith':(['lat','lon'], out_ds[:, :, 4]),
-                'solar_phase':(['lat','lon'], out_ds[:, :, 5]),
-                'slope':(['lat','lon'], out_ds[:, :, 6]),
-                'aspect':(['lat','lon'], out_ds[:, :, 7]),
-                'cosine':(['lat','lon'], out_ds[:, :, 8]),
-                'utc_time':(['lat','lon'], out_ds[:, :, 9]),
-                'earth_sun_distance':(['lat','lon'], out_ds[:, :, 10]),
-                'elevation':(['lat','lon'], out_elev)
+                'path_length':(['y','x'], out_ds[:, :, 0]),
+                'to_sensor_azimuth':(['y','x'], out_ds[:, :, 1]),
+                'to_sensor_zenith':(['y','x'], out_ds[:, :, 2]),
+                'to_sun_azimuth':(['y','x'], out_ds[:, :, 3]),
+                'to_sun_zenith':(['y','x'], out_ds[:, :, 4]),
+                'solar_phase':(['y','x'], out_ds[:, :, 5]),
+                'slope':(['y','x'], out_ds[:, :, 6]),
+                'aspect':(['y','x'], out_ds[:, :, 7]),
+                'cosine':(['y','x'], out_ds[:, :, 8]),
+                'utc_time':(['y','x'], out_ds[:, :, 9]),
+                'earth_sun_distance':(['y','x'], out_ds[:, :, 10]),
+                'elevation':(['y','x'], out_elev)
             }
         elif data_var == 'igm':
-            coords = {'lat':(['lat'], lat), 'lon':(['lon'], lon)}
-            data_vars = {'elevation':(['lat','lon'], out_elev)}
+            coords = {'y':(['y'], lat), 'x':(['x'], lon)}
+            data_vars = {'elevation':(['y','x'], out_elev)}
         else:
-             # create coords and data vars for output
-            coords = {'lat':(['lat'], lat), 'lon':(['lon'], lon), 'wavelength':(['wavelength'], wvl)}
-            data_vars = {data_var:(['lat','lon','wavelength'], out_ds), 'elevation':(['lat','lon'], out_elev)}
-        
+            # create coords and data vars for output
+            coords = {'y':(['y'], lat), 'x':(['x'], lon), 'wavelength':(['wavelength'], wvl)}
+            data_vars = {data_var:(['y','x', 'wavelength'], out_ds), 'elevation':(['y','x'], out_elev)}
         
         # create the output xarray dataset
         self._ds = xr.Dataset(data_vars=data_vars, coords=coords, attrs=metadata)
         self._ds.rio.write_crs(self.crs, inplace=True)
         self._ds.rio.write_transform(GT, inplace=True)
-        self._ds.rio.set_spatial_dims('lon', 'lat', inplace=True)
+        self._ds.rio.set_spatial_dims('x', 'y', inplace=True)
         try:
             fwhm = self._ds.fwhm.values 
             self._ds = self._ds.assign_coords(fwhm=("wavelength", fwhm))

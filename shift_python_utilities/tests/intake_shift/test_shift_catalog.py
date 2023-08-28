@@ -102,7 +102,7 @@ def test_ortho(cat,dataset, date, time, subset):
     igm = cat.L1.igm(date=date, time=time, subset=subset).read_chunked()
 
     fig,ax=plt.subplots(1,1, figsize=(20, 6))
-    cp = ax.contourf(ds.lon.values, ds.lat.values, ds.elevation.values, levels=15)
+    cp = ax.contourf(ds.x.values, ds.y.values, ds.elevation.values, levels=15)
     fig,ax=plt.subplots(1,1, figsize=(20, 6))
     cp2 = ax.contourf(igm.easting.values, igm.northing.values, igm.elevation.values, levels=15)
     
