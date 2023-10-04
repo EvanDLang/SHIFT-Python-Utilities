@@ -1,3 +1,7 @@
+"""
+credit to odc geobox
+"""
+
 from uuid import uuid4
 from functools import partial
 from tqdm import tqdm
@@ -6,33 +10,10 @@ import numpy as np
 import pandas as pd
 import rioxarray as rxr
 import dask.array as da
+import copy
 from dask.highlevelgraph import HighLevelGraph
+from ._utils import _nested_iterator, _chunk_maker
 
-
-def _nested_iterator(li, key):
-    for l in li:
-        if isinstance(l, list):
-            val = _nested_iterator(l, key)
-            if val is not None:
-                return val
-        else:
-            first, rest = l[0], l[1:]
-            if rest == key:
-                return l
-
-
-def _chunk_maker(chunk, shape):
-
-    remainders = [shape[i] % chunk[i] for i in range(len(chunk))]
-    
-    chunks = []
-    for i in range(len(chunk)):
-        temp = tuple([chunk[i] for j in range(shape[i] // chunk[i])])
-        if remainders[i] > 0:
-            temp += (remainders[i],)
-        chunks += [temp]
-
-    return tuple(chunks)
 
 def _chunk_value_retriever(ind, chunk_size, previous_ind=None, previous_value=None):
     if ind == 0:
@@ -92,9 +73,9 @@ def _create_block_index_map_ncls(chunks, dim_map):
         
     return intervals
 
-def _do_chunked_orthorectification(glt_array, v_glt, src_intervals_dict, retrieve_ind, dim_map, slices, blocks, glt_idxs, keys, dst_shape, *args):
+def _do_chunked_orthorectification(glt_array, v_glt, src_intervals_dict, retrieve_ind, dim_map, nodata, slices, blocks, glt_idxs, keys, dst_shape, *args):
     # create output array
-    dst = np.zeros(dst_shape) + np.nan
+    dst = np.zeros(dst_shape) + nodata
     
     # adjust the glt values from image level to block level
     new_inds = (glt_idxs - np.apply_along_axis(retrieve_ind, 1, blocks, src_intervals_dict))[:, [dim_map['y'], dim_map['x']]]
@@ -144,21 +125,21 @@ def _do_chunked_orthorectification(glt_array, v_glt, src_intervals_dict, retriev
         # broadcast values
         dst[Ellipsis, m2] = arr[Ellipsis, new_inds[m1, 0], new_inds[m1, 1]] 
         
-        # if tranposed, reorder to original dims order
+        # if transposed, reorder to original dims order
         if reorder:
             dst = dst.transpose(list(original_dims.values()))
       
     return dst
 
 
-def _dask_orthorectification(src, dim_map, glt_array, v_glt, glt_dims):
+def _dask_orthorectification(src, dim_map, glt_array, v_glt, glt_dims, nodata):
     
     name = 'orthorectify'
     tk = uuid4().hex
     name = f"{name}-{tk}"
     
     src_block_keys = src.__dask_keys__()
-    
+
     # get the dst shape from the glt shape (y, x) and src(other dims), create dst chunks based on the src chunk sizes and the dst shape
     dst_shape = tuple([glt_array.shape[glt_dims[k]] if k == 'x' or k == 'y' else src.shape[v] for k,v in dim_map.items()])
     dst_chunks = _chunk_maker(src.chunksize, dst_shape)
@@ -182,10 +163,12 @@ def _dask_orthorectification(src, dim_map, glt_array, v_glt, glt_dims):
         v_glt,
         src_intervals_dict,
         _retrieve_ind,
-        dim_map
+        dim_map,
+        nodata
     )
     
-    dsk ={}
+    dsk = {}
+    
     for idx in tqdm(list(np.ndindex(shape_in_blocks))):
         # create a block name
         k = (name, *idx)
@@ -229,7 +212,7 @@ def _dask_orthorectification(src, dim_map, glt_array, v_glt, glt_dims):
             dsk[k] = (ortho_proc, slices, blocks, glt_idxs, keys, chunk_shape, *tuple(block_deps))
 
         else:
-            dsk[k] = (np.full, chunk_shape, np.nan, src.dtype)
+            dsk[k] = (np.full, chunk_shape, nodata, src.dtype)
 
 
     dsk = HighLevelGraph.from_collections(name, dsk, dependencies=(src))

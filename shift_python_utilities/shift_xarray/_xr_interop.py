@@ -2,20 +2,11 @@
 Add ``.shift.`` extension to :py:class:`xr.Dataset` and :class:`xr.DataArray`.
 """
 import functools
-import warnings
-from dataclasses import dataclass
-from datetime import datetime
+
 from typing import (
     Any,
     Callable,
-    Dict,
-    Hashable,
-    List,
-    Optional,
-    Set,
-    Tuple,
-    TypeVar,
-    Union,
+    TypeVar
 )
 
 import numpy as np
@@ -24,8 +15,10 @@ import rioxarray as rxr
 import math as m
 from rasterio.crs import CRS
 from ._dask_orthorectification import _dask_orthorectification
+from ._dask_ipca import Dask_IPCA_SK, Dask_IPCA_DS
+from ._clip import clip
+from ._utils import _retrieve_crs_from_igm, reformat_path
 
-# XarrayObject = Union[xarray.DataArray, xarray.Dataset]
 XrT = TypeVar("XrT", xr.DataArray, xr.Dataset)
 F = TypeVar("F", bound=Callable)
 
@@ -53,20 +46,6 @@ def _create_valid_glt(glt, x_sub, y_sub):
 def _load_file(path):
     return rxr.open_rasterio(path)
 
-def _retrieve_crs(url):
-    igm = _load_file(url)
-    description = igm.attrs['description']
-    ind = description.find("UTM")
-    coord_system, _, zone, direction = description[57:].split(" ")
-    direction = False if direction == 'North' else True
-    epsg_code = 32600
-    epsg_code += int(zone)
-    if direction is True:
-        epsg_code += 100
-
-    return CRS.from_epsg(epsg_code)
-
-
 def _apply_transform(glt):
     GT = glt.rio.transform()
     dim_x = glt.x.shape[0]
@@ -84,108 +63,98 @@ def _apply_transform(glt):
     
     return lat, lon
 
-def xr_orthorectify(src: XrT) -> XrT:
+def xr_orthorectify(src: XrT, url=None) -> XrT:
     """
     Orthorectify raster
     """
     assert 'y' in src.coords and 'x' in src.coords
     
-    if isinstance(src, xr.Dataset):
-        for dv in src.data_vars:
-            if 'source' in src.data_vars[dv].encoding:
-                path = src.data_vars[dv].encoding['source']
-                break
-    else:
-        path = src.encoding['source']
+    if isinstance(src, xr.DataArray):
+        if url is not None:
+            assert isinstance(url, str), "The GLT url must be a string when orthorectifying a dataset"
         
-    assert path is not None, "Unable to find path to GLT"
+        src_dims = {dim: i for i, dim in enumerate(src.dims)}
+        
+        return _xr_orthorectify_da(src, src_dims, url)      
+    
+    if isinstance(url, list):
+        assert len(url) == len(src.data_vars), "Then number of urls must match the number of data vars. You can also pass a single url as a string to be used for all data vars"
+    elif isinstance(url, str):
+        url = [url for i in range(len(src.data_vars))]
+    elif url is None:
+        url = [None for i in range(len(src.data_vars))]
+        
+    assert isinstance(url, list), "When passing glt urls for a dataset you must pass a list of urls equal to the number of datavars or a single url to be used for all data vars"
+    
+    url = {name: url[i] for i, (name, array) in enumerate(src.data_vars.items())}
+    
+    return _xr_orthorectify_ds(src, url)
 
+
+def _xr_orthorectify_ds(
+    src: Any,
+    url: dict
+) -> xr.Dataset:
+    
+    assert isinstance(src, xr.Dataset)
+    
+    
+    def _orthorectify_data_var(dv: xr.DataArray, urls):
+        src_dims = {dim: i for i, dim in enumerate(dv.dims)}
+        
+        if "y" not in src_dims and "x" not in src_dims:
+            return dv
+        
+        url = urls[dv.name]
+        
+        return _xr_orthorectify_da(dv, src_dims, url)
+    
+   
+    return src.map(_orthorectify_data_var, urls=url)
+
+
+# adjust to allow passing file path
+def _xr_orthorectify_da(
+    src: Any,
+    src_dims: dict,
+    url
+) -> xr.DataArray:
+    """
+    Orthorectify raster
+    """
+    if url is not None:
+        path = url
+    else:
+        if 'source' in src.encoding:
+            path = src.encoding['source']
+        else:
+            raise Exception("A url to the glt must be provided or having the original data path stored in source")
     
     x_sub = (m.floor(min(src.x.values)), m.ceil(max(src.x.values)))
     y_sub = (m.floor(min(src.y.values)), m.ceil(max(src.y.values)))
-
-    glt = _load_file(path.replace('L2a', 'L1/glt')[:-4] + '_glt')
-    crs = _retrieve_crs(path.replace('L2a', 'L1/igm')[:-4] + '_igm')
+    
+    glt = _load_file(reformat_path('glt', path))
+    crs = _retrieve_crs_from_igm(_load_file(reformat_path('igm', path)))
     glt = _subset_glt(glt, x_sub, y_sub)
     glt_array, v_glt = _create_valid_glt(glt, x_sub, y_sub)
     glt_dims = {dim: i for i, dim in enumerate(glt.dims)}
     
     lat, lon = _apply_transform(glt)
     
-    if isinstance(src, xr.DataArray):
-        src_dims = {dim: i for i, dim in enumerate(src.dims)}
-        
-        dst, coords, attrs, dims = _xr_orthorectify_da(src, src_dims, glt_array, v_glt, glt_dims)
-        
-        coords['x'] = lon
-        coords['y'] = lat
-     
-        out = xr.DataArray(dst, coords=coords, dims=dims, attrs=attrs)
-        
-        return out
-        
-    
-    out = _xr_orthorectify_ds(src, glt_array, v_glt, glt_dims, lat, lon)
-    
-    return out
+    nodata = -9999 if src.rio.nodata is None else src.rio.nodata
 
-
-def _xr_orthorectify_ds(
-    src: Any,
-    glt_array: XrT,
-    v_glt: np.ndarray,
-    glt_dims: dict,
-    lat: np.ndarray,
-    lon: np.ndarray
-) -> xr.Dataset:
-    
-    assert isinstance(src, xr.Dataset)
-
-    
-    def _orthorectify_data_var(dv: xr.DataArray):
-        src_dims = {dim: i for i, dim in enumerate(dv.dims)}
-        
-        if "y" not in src_dims and "x" not in src_dims:
-            return dv
-        
-        dst, coords, attrs, dims =  _xr_orthorectify_da(dv, src_dims, glt_array, v_glt, glt_dims)
-        
-                
-        coords['x'] = lon
-        coords['y'] = lat
-     
-        out = xr.DataArray(dst, coords=coords, dims=dims, attrs=attrs)
-        
-        return out
-   
-    return src.map(_orthorectify_data_var)
-
-
-
-def _xr_orthorectify_da(
-    src: Any,
-    src_dims: dict,
-    glt_array: XrT,
-    v_glt: np.ndarray,
-    glt_dims: dict
-) -> xr.DataArray:
-    """
-    Orthorectify raster
-    """
-    
-    dst = _dask_orthorectification(src.data, src_dims, glt_array, v_glt, glt_dims)
+    dst = _dask_orthorectification(src.data, src_dims, glt_array, v_glt, glt_dims, nodata)
     
     coords =  {k: v if v.chunks is None else v.compute() for k, v in src.coords.items() if k != 'spatial_ref'}
     
-    if src.attrs is not None:
-        attrs = src.attrs
-    else:
-        attrs = {}
-        
-    dims = src.dims
-    # out = xr.DataArray(dst, coords=coords, dims=dims, attrs=attrs)
+    coords['x'] = lon
+    coords['y'] = lat
     
-    return dst, coords, attrs, dims
+    out = xr.DataArray(dst, coords=coords, dims=src.dims, attrs=src.attrs).rio.write_crs(crs, inplace=True)
+    out = out.rio.write_nodata(nodata)
+    out.encoding = src.encoding
+    
+    return out
 
 def _wrap_op(method: F) -> F:
     @functools.wraps(method, assigned=("__doc__",))
@@ -205,8 +174,17 @@ class SHIFTExtensionDa:
 
     def __init__(self, xx: xr.DataArray):
         self._xx = xx
-
+    
+    def init_ipca(self, feature_dim, base='dask', *args, **kwargs):
+        if base == 'dask':
+            self.ipca = Dask_IPCA_DS(self._xx, feature_dim, *args, **kwargs)
+        elif base == 'sklearn':
+            self.ipca = Dask_IPCA_SK(self._xx, feature_dim, *args, **kwargs)
+        return self.ipca
+        
+        
     orthorectify = _wrap_op(xr_orthorectify)
+    clip = _wrap_op(clip)
 
 
 
@@ -221,5 +199,3 @@ class  SHIFTExtensionDs:
 
     orthorectify = _wrap_op(xr_orthorectify)
     
-
-
