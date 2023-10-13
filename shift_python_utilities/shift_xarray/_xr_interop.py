@@ -14,6 +14,7 @@ import xarray as xr
 import rioxarray as rxr
 import math as m
 from rasterio.crs import CRS
+from .rgb import plot_rgb
 from ._dask_orthorectification import _dask_orthorectification
 from ._dask_ipca import Dask_IPCA_SK, Dask_IPCA_DS
 from ._clip import clip
@@ -156,6 +157,15 @@ def _xr_orthorectify_da(
     
     return out
 
+
+def xr_rgb_da(src, **kwargs):
+    
+    assert isinstance(src, xr.DataArray), "Input data must be an Xarray DataArary"
+    assert 'y' in src.coords and 'x' in src.coords, "y and x must be used as spatial coords"
+    assert len(src.dims) == 3, "plot_rgb only supports 3 dimensions currently"
+    
+    return plot_rgb(src, **kwargs)
+
 def _wrap_op(method: F) -> F:
     @functools.wraps(method, assigned=("__doc__",))
     def wrapped(*args, **kw):
@@ -184,6 +194,7 @@ class SHIFTExtensionDa:
         
         
     orthorectify = _wrap_op(xr_orthorectify)
+    plot_rgb = _wrap_op(xr_rgb_da)
     clip = _wrap_op(clip)
 
 

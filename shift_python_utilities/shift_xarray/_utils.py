@@ -1,5 +1,52 @@
 from rasterio.crs import CRS
+from ncls import NCLS
 import os
+import numpy as np
+
+def _create_interval(ind, chunk_size, previous_ind=None, previous_value=None):
+    if ind == 0:
+        ind1 = ind * chunk_size
+        ind2 = (ind+1) * chunk_size
+    else:
+        if previous_ind == ind:
+            ind1 = previous_value[0]
+            ind2 = previous_value[0] + chunk_size
+        else:
+            ind1 = previous_value[1]
+            ind2 = previous_value[1] + chunk_size
+    return ind1, ind2
+
+def _create_block_index_map_dict(chunks, dim_map):
+    prev = tuple([None for i in dim_map])
+    block_map = {}
+    for ind in np.ndindex(tuple(map(len, chunks))):
+        block_map[ind] = [(0, 0) for i in ind]
+        for axis, i in enumerate(ind):
+            chunk_size = chunks[axis][i]
+            r = _create_interval(i, chunk_size, prev[axis], block_map[prev][axis] if prev in block_map else None)
+            block_map[ind][axis] = r
+        prev = ind
+    
+    return block_map
+
+
+def _create_block_index_map_ncls(chunks, dim_map):
+    intervals = [[] for i in dim_map]
+    for axis, chunksizes in enumerate(chunks):
+        for i, chunksize in enumerate(chunksizes):
+            if i == 0:
+                ind = 0, (i+1) * chunksize
+            else:
+                ind = prev[1], prev[1] + chunksize
+            prev = ind
+            intervals[axis] += [prev]
+            
+    for i in range(len(intervals)):
+        interval = np.array(intervals[i])
+        intervals[i] =  NCLS(interval[:, 0], interval[:, 1], np.arange(len(interval[:, 0])))
+        
+    return intervals
+
 
 def reformat_path(dataset, path):
     assert dataset in ['rfl', 'rdn', 'glt', 'igm']

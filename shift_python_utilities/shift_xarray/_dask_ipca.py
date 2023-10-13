@@ -45,14 +45,20 @@ class Dask_IPCA_SK(IPCA_SK):
     def __init__(self, src, feature_dim=0, n_components=2, whiten=False, copy=True, batch_size=None):
         super().__init__(n_components=n_components, whiten=whiten, copy=copy, batch_size=batch_size)
         
-        self.feature_dim = feature_dim
-    
         dim_map = {dim: i for i, dim in enumerate(src.dims)}
-        feat_shape = src.shape[feature_dim]
-        temp = {k:v for k, v in dim_map.items() if v!= feature_dim}
+        
+        if isinstance(feature_dim, str):
+            self.feature_dim = dim_map[feature_dim]
+        else:
+            self.feature_dim = feature_dim
+            
+        feat_shape = src.shape[self.feature_dim]
+        temp = {k:v for k, v in dim_map.items() if v!= self.feature_dim}
         self.src = src.stack(combined=(list(temp.keys())))
         if self.src.shape[-1] != feat_shape:
             self.src = self.src.T
+        
+        print(self.src.shape)
 
         
     def _do_chunked_transform(self, *data):
@@ -135,13 +141,20 @@ class Dask_IPCA_DS(IPCA_Dask):
     def __init__(self, src, feature_dim=0, n_components=2, whiten=False, copy=True, batch_size=None, svd_solver='auto', iterated_power=0, random_state=None):
         super().__init__(n_components=n_components, whiten=whiten, copy=copy, batch_size=batch_size, svd_solver=svd_solver, iterated_power=iterated_power, random_state=random_state)
         
+        
+        
         dim_map = {dim: i for i, dim in enumerate(src.dims)}
-        feat_shape = src.shape[feature_dim]
-        temp = {k:v for k, v in dim_map.items() if v!= feature_dim}
+        
+        if isinstance(feature_dim, str):
+            self.feature_dim = dim_map[feature_dim]
+        else:
+            self.feature_dim = feature_dim
+        
+        feat_shape = src.shape[self.feature_dim]
+        temp = {k:v for k, v in dim_map.items() if v!= self.feature_dim}
         self.src = src.stack(combined=(list(temp.keys())))
         if self.src.shape[-1] != feat_shape:
-            self.src = self.src.T
-        
+            self.src = self.src.T        
     
     def dask_fit(self, window_size=None):
         if window_size is None:

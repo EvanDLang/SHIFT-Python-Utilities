@@ -1,8 +1,12 @@
 """
 WIP
 
-- functionality all there, just needs to be incorporated into xarray
+- support 4D???
 """
+import xarray as xr
+import hvplot.xarray
+import numpy as np
+import inspect
 
 def normalize_band(band):
     mask = ~np.isnan(band)
@@ -17,6 +21,11 @@ def gammacorr(band, gamma=2):
     return np.power(band, 1/gamma)
 
 def plot_rgb(data, normalize=False, **kwargs):
+    
+    assert isinstance(data, xr.DataArray), "Input data must be an Xarray DataArary"
+    assert 'y' in data.coords and 'x' in data.coords, "y and x must be used as spatial coords"
+    assert len(data.dims) == 3, "plot_rgb only supports 3 dimensions currently"
+    
     ds_rgb = xr.DataArray(data, dims=('bands', 'y', 'x'), coords=({'x':data.x.values, 'y':data.y.values, 'bands': [0,1,2]})).to_dataset(name='rgb')
     
     brighten_args = [p for p in inspect.signature(brighten).parameters if p != 'band']
