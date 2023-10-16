@@ -18,7 +18,7 @@ from .rgb import plot_rgb
 from ._dask_orthorectification import _dask_orthorectification
 from ._dask_ipca import Dask_IPCA_SK, Dask_IPCA_DS
 from ._clip import clip
-from ._utils import _retrieve_crs_from_igm, reformat_path
+from ._utils import reformat_path
 
 XrT = TypeVar("XrT", xr.DataArray, xr.Dataset)
 F = TypeVar("F", bound=Callable)
@@ -135,7 +135,7 @@ def _xr_orthorectify_da(
     y_sub = (m.floor(min(src.y.values)), m.ceil(max(src.y.values)))
     
     glt = _load_file(reformat_path('glt', path))
-    crs = _retrieve_crs_from_igm(_load_file(reformat_path('igm', path)))
+    crs = glt.rio.crs
     glt = _subset_glt(glt, x_sub, y_sub)
     glt_array, v_glt = _create_valid_glt(glt, x_sub, y_sub)
     glt_dims = {dim: i for i, dim in enumerate(glt.dims)}
