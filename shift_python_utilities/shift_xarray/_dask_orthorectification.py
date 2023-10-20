@@ -1,10 +1,9 @@
 """
-credit to odc geobox
+credit to odc geobox for providing the loose structure
 """
 
 from uuid import uuid4
 from functools import partial
-from tqdm import tqdm
 import numpy as np
 import pandas as pd
 import rioxarray as rxr
@@ -125,7 +124,7 @@ def _dask_orthorectification(src, dim_map, glt_array, v_glt, glt_dims, nodata):
     
     dsk = {}
     
-    for idx in tqdm(list(np.ndindex(shape_in_blocks))):
+    for idx in list(np.ndindex(shape_in_blocks)):
         # create a block name
         k = (name, *idx)
 
@@ -173,4 +172,6 @@ def _dask_orthorectification(src, dim_map, glt_array, v_glt, glt_dims, nodata):
 
     dsk = HighLevelGraph.from_collections(name, dsk, dependencies=(src))
     
-    return da.Array(dsk, name, chunks=dst_chunks, dtype=src.dtype, shape=dst_shape)
+    dsk = da.Array(dsk, name, chunks=dst_chunks, dtype=src.dtype, shape=dst_shape)
+    
+    return dsk

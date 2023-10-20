@@ -14,6 +14,7 @@ import xarray as xr
 import rioxarray as rxr
 import math as m
 from rasterio.crs import CRS
+import rasterio as rio
 from .rgb import plot_rgb
 from ._dask_orthorectification import _dask_orthorectification
 from ._dask_ipca import Dask_IPCA_SK, Dask_IPCA_DS
@@ -26,18 +27,18 @@ F = TypeVar("F", bound=Callable)
 def _subset_glt(glt, x_sub, y_sub):
     y_inds = xr.DataArray(list(range(y_sub[0], y_sub[1])))
     x_inds = xr.DataArray(list(range(x_sub[0], x_sub[1])))
-    return glt.where(glt[1, :, :].compute().isin(y_inds) & (glt[0, :, :].compute().isin(x_inds)), drop=True)
+    return  glt.where((glt[1, :, :].compute() - 1).isin(y_inds) & ((glt[0, :, :].compute() - 1).isin(x_inds)), drop=True)
 
-def _create_valid_glt(glt, x_sub, y_sub):
-    glt_array = glt.fillna(-9999).astype(int).values
+def _create_valid_glt(glt, x_sub=None, y_sub=None):
+    glt_array = glt.fillna(-9999.).astype(int).values
     valid_glt = np.all(glt_array != -9999, axis=0)
     
-    if not x_sub is None:
+    if x_sub is not None and min(x_sub) != 0:
         glt_array[0, valid_glt] -= min(x_sub)
     else:
         glt_array[0, valid_glt] -= 1
     
-    if not y_sub is None:
+    if y_sub is not None and min(y_sub) != 0:
         glt_array[1, valid_glt] -= min(y_sub)
     else:
         glt_array[1, valid_glt] -= 1
@@ -64,7 +65,7 @@ def _apply_transform(glt):
     
     return lat, lon
 
-def xr_orthorectify(src: XrT, url=None) -> XrT:
+def xr_orthorectify(src: XrT, url=None, shapefile=None) -> XrT:
     """
     Orthorectify raster
     """
@@ -76,7 +77,7 @@ def xr_orthorectify(src: XrT, url=None) -> XrT:
         
         src_dims = {dim: i for i, dim in enumerate(src.dims)}
         
-        return _xr_orthorectify_da(src, src_dims, url)      
+        return _xr_orthorectify_da(src, src_dims, url, shapefile)      
     
     if isinstance(url, list):
         assert len(url) == len(src.data_vars), "Then number of urls must match the number of data vars. You can also pass a single url as a string to be used for all data vars"
@@ -89,12 +90,13 @@ def xr_orthorectify(src: XrT, url=None) -> XrT:
     
     url = {name: url[i] for i, (name, array) in enumerate(src.data_vars.items())}
     
-    return _xr_orthorectify_ds(src, url)
+    return _xr_orthorectify_ds(src, url, shapefile)
 
 
 def _xr_orthorectify_ds(
     src: Any,
-    url: dict
+    url: dict,
+    shapefile
 ) -> xr.Dataset:
     
     assert isinstance(src, xr.Dataset)
@@ -108,9 +110,8 @@ def _xr_orthorectify_ds(
         
         url = urls[dv.name]
         
-        return _xr_orthorectify_da(dv, src_dims, url)
+        return _xr_orthorectify_da(dv, src_dims, url, shapefile)
     
-   
     return src.map(_orthorectify_data_var, urls=url)
 
 
@@ -118,7 +119,8 @@ def _xr_orthorectify_ds(
 def _xr_orthorectify_da(
     src: Any,
     src_dims: dict,
-    url
+    url,
+    shapefile
 ) -> xr.DataArray:
     """
     Orthorectify raster
@@ -129,22 +131,35 @@ def _xr_orthorectify_da(
         if 'source' in src.encoding:
             path = src.encoding['source']
         else:
-            raise Exception("A url to the glt must be provided or having the original data path stored in source")
-    
-    x_sub = (m.floor(min(src.x.values)), m.ceil(max(src.x.values)))
-    y_sub = (m.floor(min(src.y.values)), m.ceil(max(src.y.values)))
-    
-    glt = _load_file(reformat_path('glt', path))
-    crs = glt.rio.crs
-    glt = _subset_glt(glt, x_sub, y_sub)
-    glt_array, v_glt = _create_valid_glt(glt, x_sub, y_sub)
-    glt_dims = {dim: i for i, dim in enumerate(glt.dims)}
-    
-    lat, lon = _apply_transform(glt)
+            raise Exception("A url to the glt must be provided or having the original data path stored in DataArray.encoding['source']")
     
     nodata = -9999 if src.rio.nodata is None else src.rio.nodata
-
-    dst = _dask_orthorectification(src.data, src_dims, glt_array, v_glt, glt_dims, nodata)
+    
+    glt = rxr.open_rasterio(reformat_path('glt', path))
+    crs = glt.rio.crs
+    glt_dims = {dim: i for i, dim in enumerate(glt.dims)}
+    
+    if shapefile is not None:
+        if crs.to_epsg() != shapefile.crs:
+            shapefile=shapefile.to_crs(crs)
+            
+        bounds = shapefile.bounds
+        minx, miny, maxx, maxy = np.min(bounds['minx'].values), np.min(bounds['miny'].values), np.max(bounds['maxy'].values), np.max(bounds['maxy'].values)
+        
+        glt = rxr.open_rasterio(
+            filename=reformat_path('glt', path)
+        ).rio.clip_box(minx, miny, maxx, maxy).rio.clip(shapefile.geometry.values)
+        
+        lat, lon = _apply_transform(glt)
+        glt, v_glt = _create_valid_glt(glt)
+    else:
+        x_sub = (m.floor(min(src.x.values)), m.ceil(max(src.x.values)))
+        y_sub = (m.floor(min(src.y.values)), m.ceil(max(src.y.values)))
+        glt = _subset_glt(glt, x_sub, y_sub)
+        lat, lon = _apply_transform(glt)
+        glt, v_glt = _create_valid_glt(glt, x_sub, y_sub)
+       
+    dst = _dask_orthorectification(src.data, src_dims, glt, v_glt, glt_dims, nodata)
     
     coords =  {k: v if v.chunks is None else v.compute() for k, v in src.coords.items() if k != 'spatial_ref'}
     
