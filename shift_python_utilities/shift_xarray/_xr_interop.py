@@ -114,8 +114,6 @@ def _xr_orthorectify_ds(
     
     return src.map(_orthorectify_data_var, urls=url)
 
-
-# adjust to allow passing file path
 def _xr_orthorectify_da(
     src: Any,
     src_dims: dict,

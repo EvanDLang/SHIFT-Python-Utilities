@@ -26,7 +26,7 @@ def all_equal(iterable):
     g = groupby(iterable)
     return next(g, True) and not next(g, False)
 
-def prep_file_paths(gdf, datasets):
+def _prep_file_paths(gdf, datasets):
     file_paths = {}
 
     for ind, (date, time) in gdf[['date', 'time']].iterrows():
@@ -46,7 +46,7 @@ def prep_file_paths(gdf, datasets):
    
     return file_paths
 
-def load_data(file_paths, gdf, merge_strategy, chunks):
+def _load_data(file_paths, gdf, merge_strategy, chunks, resampling, res, crs):
     out_data = {}
     for date, file_path in file_paths.items():
     
@@ -68,16 +68,30 @@ def load_data(file_paths, gdf, merge_strategy, chunks):
         to_merge = [ds.SHIFT.orthorectify(shapefile=gdf) for ds in datasets]
         
         if not all_equal([ds.rio.crs.to_epsg() for ds in to_merge]):
-            crs = to_merge[0].rio.crs
+            if crs is None:
+                crs = to_merge[0].rio.crs
             for i in range(len(to_merge)):
                 if to_merge[i].rio.crs.to_epsg != crs:
                     how = to_merge[i].odc.output_geobox(crs)
                     to_merge[i] = to_merge[i].odc.reproject(how)
-            
+      
         if len(to_merge) > 1:
-            to_merge = dask_merge_datasets(to_merge, method=merge_strategy)
+            to_merge = dask_merge_datasets(to_merge, method=merge_strategy, resampling=resampling, res=res, crs=crs)
         else:
+       
             to_merge = to_merge[0]
+            how = None
+           
+            if res is not None and crs is not None:
+                how = to_merge.odc.output_geobox(crs, resolution=res)
+            elif res is not None and crs is None:
+                how = to_merge.odc.output_geobox(to_merge.rio.crs, resolution=res)
+            elif res is None and crs is not None:
+                how = to_merge.odc.output_geobox(crs) 
+            
+            if how is not None:
+                to_merge = to_merge.odc.reproject(how)
+                to_merge = to_merge.rename({to_merge.rio.x_dim: 'x', to_merge.rio.y_dim: 'y'})
         
         out_data[date] = to_merge
     
@@ -89,7 +103,10 @@ def load_shift_data(datasets,
                     flight_lines=gpd.read_file('/efs/efs-data-curated/v1/shift_aviris_ng_raw_v1_shape/shift_aviris_ng_raw_v1.shp'),
                     merge_strategy='first',
                     all_touched=False,
-                    chunks={'y':100}
+                    chunks={'y':100},
+                    res=None,
+                    crs=None,
+                    resampling='nearest'
                    ):
    
     # validate data argument
@@ -105,16 +122,23 @@ def load_shift_data(datasets,
     
     assert len(intersecting) > 0, "Invalid date range"
     
+    
+    # gdf = gdf[['geometry']]
+    
     temp = []
     for date in intersecting.date.unique():
         temp_intersecting = intersecting.loc[intersecting.date==date]
         temp_intersecting = temp_intersecting.sjoin(gdf.to_crs(temp_intersecting.crs), how='inner', predicate='contains')
         if len(temp_intersecting) < 1:
-            temp_intersecting.sjoin(gdf.to_crs(temp_intersecting.crs), how='inner')
+            temp_intersecting = intersecting.loc[intersecting.date==date]
+            temp_intersecting = temp_intersecting.sjoin(gdf.to_crs(temp_intersecting.crs), how='inner')
         
         temp += [temp_intersecting]
-    intersecting = pd.concat(temp)
-    print(intersecting)
+    if len(temp) > 0:
+        intersecting = pd.concat(temp)
+    else:
+        raise Exception("The provided shapefile does not overlap with the data")
+    
     # intersecting = intersecting.sjoin(gdf.to_crs(intersecting.crs), how='inner', predicate='contains')
     # if len(intersecting) < 1:
     #     intersecting.sjoin(gdf.to_crs(intersecting.crs), how='inner')
@@ -122,10 +146,10 @@ def load_shift_data(datasets,
     assert len(intersecting) > 0, "Shapefile does not overlap with any of the flight lines"
     
     # generate the file paths for the data
-    file_paths = prep_file_paths(intersecting, datasets)
+    file_paths = _prep_file_paths(intersecting, datasets)
     
     # load and merge datasets
-    out_data = load_data(file_paths, gdf, merge_strategy, chunks)
+    out_data = _load_data(file_paths=file_paths, gdf=gdf, merge_strategy=merge_strategy, chunks=chunks, resampling=resampling, res=res, crs=crs)
     
     # sort data by date
     temp_keys = list(out_data.keys())

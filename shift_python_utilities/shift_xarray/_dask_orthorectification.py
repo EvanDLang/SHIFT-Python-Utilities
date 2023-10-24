@@ -169,7 +169,6 @@ def _dask_orthorectification(src, dim_map, glt_array, v_glt, glt_dims, nodata):
         else:
             dsk[k] = (np.full, chunk_shape, nodata, src.dtype)
 
-
     dsk = HighLevelGraph.from_collections(name, dsk, dependencies=(src))
     
     dsk = da.Array(dsk, name, chunks=dst_chunks, dtype=src.dtype, shape=dst_shape)

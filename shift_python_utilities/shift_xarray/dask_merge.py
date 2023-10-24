@@ -6,12 +6,15 @@ import xarray as xr
 from functools import partial
 from uuid import uuid4
 from rasterio import windows
+from rasterio.crs import CRS
 from rioxarray.rioxarray import _make_coords
 import dask.array as da
 from dask.highlevelgraph import HighLevelGraph
 import itertools
+from rasterio.enums import Resampling
 from shift_python_utilities.shift_xarray._dask_orthorectification import _create_block_index_map_dict, _create_block_index_map_ncls
 from rasterio.merge import copy_first, copy_last, copy_min, copy_max, copy_sum, copy_count
+import odc.geo.xr
 
 MERGE_METHODS = {
     "first": copy_first,
@@ -87,8 +90,7 @@ def do_dask_merge(copyto, nodataval, dst_shape, dst_masks, src_masks, indices, r
     
     return region
 
-# other arguments later?
-def dask_merge_arrays(srcs, method='first'):
+def dask_merge_arrays(srcs, res=None, crs=None, nodataval=None, resampling='nearest', method='first'):
     
     assert isinstance(srcs, list) and len(srcs) > 1, 'srcs must be a list of at least length 2!'
     
@@ -101,20 +103,57 @@ def dask_merge_arrays(srcs, method='first'):
         raise ValueError('Unknown method {0}, must be one of {1} or callable'
                          .format(method, list(MERGE_METHODS.keys())))
     
+    
+    valid_resampling = [r for r in dir(Resampling) if '_' not in r]
+    if resampling not in valid_resampling:
+        raise ValueError('Unknown resampling method {0}, must be one of {1}'.format(resampling, valid_resampling))
+    
+    resampling = getattr(Resampling, resampling)
+
     # Get geospatial information from the first raster
-    res = srcs[0].rio.resolution()
-    first_crs = srcs[0].rio.crs
-    nodataval = srcs[0].rio.nodata if srcs[0].rio.nodata is not None else -9999.
+    if res is None and crs is None:
+        res = srcs[0].rio.resolution()
+        first_crs = srcs[0].rio.crs
+    elif res is not None and crs is not None:
+        res = (res, -res)
+        first_crs = crs
+    elif res is not None and crs is None:
+        res = (res, -res)
+        first_crs = srcs[0].rio.crs
+    elif res is None and crs is not None:
+        first_crs = crs
+        how = srcs[0].odc.output_geobox(first_crs)
+
+        res = (how.resolution.x, how.resolution.y)
+
+    if nodataval is None:
+        nodataval = srcs[0].rio.nodata if srcs[0].rio.nodata is not None else -9999.
+    
     dt = srcs[0].dtype
     
     xs = []
     ys = []
 
-    for src in srcs:
-        left, bottom, right, top = src.rio.bounds()
+    for i in range(len(srcs)):
+        # determine if any resampling needs to take place
+        res_diff = np.asarray(res) - np.asarray(srcs[i].rio.resolution())
+        res_diff = res_diff[0] if res_diff[0] > 0 else res_diff[0] * -1
+        
+        if res_diff >= .01 or first_crs.to_epsg() != srcs[i].rio.crs.to_epsg():
+            how = srcs[i].odc.output_geobox(first_crs, resolution=res[0])
+            srcs[i] = srcs[i].odc.reproject(how, resampling=resampling, dst_nodata=nodataval)
+            
+            if 'y' not in srcs[i].dims:
+                srcs[i] = srcs[i].rename({srcs[i].rio.y_dim: 'y'})
+            if 'x' not in srcs[i].dims:
+                srcs[i] = srcs[i].rename({srcs[i].rio.x_dim: 'x'})   
+           
+            
+        left, bottom, right, top = srcs[i].rio.bounds()
         xs.extend([left, right])
         ys.extend([bottom, top])
-
+        
+  
     dst_w, dst_s, dst_e, dst_n = min(xs), min(ys), max(xs), max(ys)
 
     output_width = int(round((dst_e - dst_w) / res[0]))
@@ -126,7 +165,7 @@ def dask_merge_arrays(srcs, method='first'):
     dim_map = {dim: i for i, dim in enumerate(srcs[0].dims)}
     dst_shape = tuple([output_dims[k] if k == 'x' or k == 'y' else srcs[0].shape[v] for k,v in dim_map.items()])
     dst_chunks = _chunk_maker(srcs[0].data.chunksize, dst_shape)
-
+    
     coords = _make_coords(
         srcs[0],
         output_transform,
@@ -159,11 +198,12 @@ def dask_merge_arrays(srcs, method='first'):
     block_map = {}
     # loop through source rasters
     for raster_idx, src in enumerate(srcs):
-        src_block_keys = src.__dask_keys__()
+        
+        src_block_keys = src.data.__dask_keys__()
         shape_in_blocks = tuple(map(len, src.data.chunks))
         chunk_bounds = get_chunk_bounds(src)
         src_dim_map = {dim: i for i, dim in enumerate(src.dims)}
-
+        
         # loop through source raster blocks
         for i, idx in enumerate(np.ndindex(shape_in_blocks)):
 
@@ -204,8 +244,6 @@ def dask_merge_arrays(srcs, method='first'):
             indst = inds.T 
             inds = list(zip(*indst))
          
-    
-
             # create an ind map for the chunks present in the dst window
             dst_dim_map = {dim: i for i, dim in enumerate(dst_data.dims)}
             ind_map = _create_block_index_map_dict(dst_data.chunks, dst_dim_map)
@@ -254,9 +292,8 @@ def dask_merge_arrays(srcs, method='first'):
         chunk_shape = tuple(ch[i] for ch, i in zip(dst_chunks, idx))
 
         if idx in block_map:
-
             block_deps, dst_masks, src_masks, indices, roff, coff = list(zip(*block_map[idx]))
-            dsk[k] = (merge_proc, chunk_shape, dst_masks, src_masks, indices, roff, coff, *tuple(block_deps))
+            dsk[k] = (merge_proc, chunk_shape, dst_masks, src_masks, indices, roff, coff, *block_deps)
         else:
             dsk[k] = (np.full, chunk_shape, nodataval, src.dtype)
 
@@ -277,15 +314,18 @@ def dask_merge_arrays(srcs, method='first'):
     return out
 
 
-def dask_merge_datasets(srcs, method='first'):
-    
+def dask_merge_datasets(srcs, res=None, crs=None, nodataval=None, resampling='nearest', method='first'):
     representative_ds = srcs[0]
     merged_data = {}
     
     for data_var in representative_ds.data_vars:
         merged_data[data_var] = dask_merge_arrays(
             [src[data_var] for src in srcs],
-            method=method          
+            res=res,
+            resampling=resampling,
+            crs=crs,
+            nodataval=nodataval if nodataval is not None else representative_ds[data_var].rio.nodata,
+            method=method       
         )
         
     data_var = list(representative_ds.data_vars)[0]
