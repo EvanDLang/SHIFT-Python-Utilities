@@ -106,3 +106,14 @@ def _chunk_maker(chunk, shape):
         chunks += [temp]
 
     return tuple(chunks)
+
+
+def _create_no_data_mask(arr: np.ndarray, nodataval: float) -> np.ndarray:
+    if np.isnan(nodataval):
+        mask = np.isnan(arr)
+    elif np.issubdtype(arr.dtype, np.floating):
+        mask = np.isclose(arr, nodataval)
+    else:
+        mask = arr == nodataval
+    
+    return mask

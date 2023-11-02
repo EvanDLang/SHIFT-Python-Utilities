@@ -18,8 +18,9 @@ import rasterio as rio
 from .rgb import plot_rgb
 from ._dask_orthorectification import _dask_orthorectification
 from ._dask_ipca import Dask_IPCA_SK, Dask_IPCA_DS
-from ._clip import clip
+from ._clip import clip_array, clip_dataset
 from ._utils import reformat_path
+import geopandas as gpd
 
 XrT = TypeVar("XrT", xr.DataArray, xr.Dataset)
 F = TypeVar("F", bound=Callable)
@@ -27,7 +28,11 @@ F = TypeVar("F", bound=Callable)
 def _subset_glt(glt, x_sub, y_sub):
     y_inds = xr.DataArray(list(range(y_sub[0], y_sub[1])))
     x_inds = xr.DataArray(list(range(x_sub[0], x_sub[1])))
-    return  glt.where((glt[1, :, :].compute() - 1).isin(y_inds) & ((glt[0, :, :].compute() - 1).isin(x_inds)), drop=True)
+
+    axis_1 = glt[1, :, :].compute() - 1
+    axis_0 = glt[0, :, :].compute() - 1
+ 
+    return  glt.where((axis_1).isin(y_inds) & ((axis_0).isin(x_inds)), drop=True)
 
 def _create_valid_glt(glt, x_sub=None, y_sub=None):
     glt_array = glt.fillna(-9999.).astype(int).values
@@ -39,14 +44,11 @@ def _create_valid_glt(glt, x_sub=None, y_sub=None):
         glt_array[0, valid_glt] -= 1
     
     if y_sub is not None and min(y_sub) != 0:
-        glt_array[1, valid_glt] -= min(y_sub)
+        glt_array[1, valid_glt] -= min(y_sub) + 1
     else:
         glt_array[1, valid_glt] -= 1
     
     return glt_array, valid_glt
-
-def _load_file(path):
-    return rxr.open_rasterio(path)
 
 def _apply_transform(glt):
     GT = glt.rio.transform()
@@ -65,7 +67,7 @@ def _apply_transform(glt):
     
     return lat, lon
 
-def xr_orthorectify(src: XrT, url=None, shapefile=None) -> XrT:
+def xr_orthorectify(src: XrT, url=None, subset=None) -> XrT:
     """
     Orthorectify raster
     """
@@ -77,7 +79,7 @@ def xr_orthorectify(src: XrT, url=None, shapefile=None) -> XrT:
         
         src_dims = {dim: i for i, dim in enumerate(src.dims)}
         
-        return _xr_orthorectify_da(src, src_dims, url, shapefile)      
+        return _xr_orthorectify_da(src, src_dims, url, subset)      
     
     if isinstance(url, list):
         assert len(url) == len(src.data_vars), "Then number of urls must match the number of data vars. You can also pass a single url as a string to be used for all data vars"
@@ -90,13 +92,13 @@ def xr_orthorectify(src: XrT, url=None, shapefile=None) -> XrT:
     
     url = {name: url[i] for i, (name, array) in enumerate(src.data_vars.items())}
     
-    return _xr_orthorectify_ds(src, url, shapefile)
+    return _xr_orthorectify_ds(src, url, subset)
 
 
 def _xr_orthorectify_ds(
     src: Any,
     url: dict,
-    shapefile
+    subset
 ) -> xr.Dataset:
     
     assert isinstance(src, xr.Dataset)
@@ -110,7 +112,7 @@ def _xr_orthorectify_ds(
         
         url = urls[dv.name]
         
-        return _xr_orthorectify_da(dv, src_dims, url, shapefile)
+        return _xr_orthorectify_da(dv, src_dims, url, subset)
     
     return src.map(_orthorectify_data_var, urls=url)
 
@@ -118,7 +120,7 @@ def _xr_orthorectify_da(
     src: Any,
     src_dims: dict,
     url,
-    shapefile
+    subset
 ) -> xr.DataArray:
     """
     Orthorectify raster
@@ -137,18 +139,23 @@ def _xr_orthorectify_da(
     crs = glt.rio.crs
     glt_dims = {dim: i for i, dim in enumerate(glt.dims)}
     
-    if shapefile is not None:
-        if crs.to_epsg() != shapefile.crs:
-            shapefile=shapefile.to_crs(crs)
-            
-        bounds = shapefile.bounds
-        minx, miny, maxx, maxy = np.min(bounds['minx'].values), np.min(bounds['miny'].values), np.max(bounds['maxy'].values), np.max(bounds['maxy'].values)
         
-        glt = rxr.open_rasterio(
-            filename=reformat_path('glt', path)
-        ).rio.clip_box(minx, miny, maxx, maxy).rio.clip(shapefile.geometry.values)
-        
+    if subset is not None:
         lat, lon = _apply_transform(glt)
+        glt = glt.assign_coords({'x': lon, 'y': lat})
+                            
+        if isinstance(subset, gpd.GeoDataFrame):
+            if crs.to_epsg() != subset.crs:
+                subset=subset.to_crs(crs)
+                            
+            glt = glt.rio.clip(subset.geometry.values)
+        elif isinstance(subset, tuple) and len(subset) == 4:
+            glt = glt.rio.clip_box(*subset) 
+        else:
+            raise ValueError("Provided subset must be a GDF or a bounding box (minx, miny, maxx, maxy)")
+        
+        lat = glt.y.values
+        lon = glt.x.values
         glt, v_glt = _create_valid_glt(glt)
     else:
         x_sub = (m.floor(min(src.x.values)), m.ceil(max(src.x.values)))
@@ -156,6 +163,24 @@ def _xr_orthorectify_da(
         glt = _subset_glt(glt, x_sub, y_sub)
         lat, lon = _apply_transform(glt)
         glt, v_glt = _create_valid_glt(glt, x_sub, y_sub)
+    
+    
+#     if shapefile is not None:
+#         if crs.to_epsg() != shapefile.crs:
+#             shapefile=shapefile.to_crs(crs)
+            
+#         glt = rxr.open_rasterio(reformat_path('glt', path))#.rio.clip(shapefile.geometry.values)
+#         lat, lon = _apply_transform(glt)
+#         glt = glt.assign_coords({'x': lon, 'y': lat}).rio.clip(shapefile.geometry.values)
+#         lat = glt.y.values
+#         lon = glt.x.values
+#         glt, v_glt = _create_valid_glt(glt)
+#     else:
+#         x_sub = (m.floor(min(src.x.values)), m.ceil(max(src.x.values)))
+#         y_sub = (m.floor(min(src.y.values)), m.ceil(max(src.y.values)))
+#         glt = _subset_glt(glt, x_sub, y_sub)
+#         lat, lon = _apply_transform(glt)
+#         glt, v_glt = _create_valid_glt(glt, x_sub, y_sub)
        
     dst = _dask_orthorectification(src.data, src_dims, glt, v_glt, glt_dims, nodata)
     
@@ -165,6 +190,7 @@ def _xr_orthorectify_da(
     coords['y'] = lat
     
     out = xr.DataArray(dst, coords=coords, dims=src.dims, attrs=src.attrs).rio.write_crs(crs, inplace=True)
+    out = out.rio.write_nodata(nodata, encoded=True)
     out = out.rio.write_nodata(nodata)
     out.encoding = src.encoding
     
@@ -208,7 +234,7 @@ class SHIFTExtensionDa:
         
     orthorectify = _wrap_op(xr_orthorectify)
     plot_rgb = _wrap_op(xr_rgb_da)
-    clip = _wrap_op(clip)
+    clip = _wrap_op(clip_array)
 
 
 
@@ -222,4 +248,5 @@ class  SHIFTExtensionDs:
         self._xx = ds
 
     orthorectify = _wrap_op(xr_orthorectify)
+    clip = _wrap_op(clip_dataset)
     

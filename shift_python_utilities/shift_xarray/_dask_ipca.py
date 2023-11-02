@@ -2,20 +2,13 @@
 import numpy as np
 from uuid import uuid4
 import dask.array as da
-import dask
+from dask.delayed import delayed
 from dask.highlevelgraph import HighLevelGraph
 from tqdm import tqdm
 from sklearn.decomposition import IncrementalPCA as IPCA_SK
 from dask_ml.decomposition import IncrementalPCA as IPCA_Dask
 import xarray as xr
-import rioxarray
-import copy as cpy
-import threading
-from dask.distributed import Lock
-from joblib import Parallel, delayed
-
-
-from ._utils import _nested_iterator
+from ._utils import _nested_iterator, _create_no_data_mask
 
 def _create_windows(window_size, number_of_values):
     windows = []
@@ -30,8 +23,7 @@ def _create_windows(window_size, number_of_values):
         windows += [window]
     
     return windows
-
-
+                
 def _get_overlap(dst_idx, chunks):
     src_shape = tuple(map(len, chunks))
     dst_idx = list(dst_idx)
@@ -40,10 +32,19 @@ def _get_overlap(dst_idx, chunks):
         dst_idx[1] = i
         blocks += [tuple(dst_idx)]
     return blocks
+        
 
 class Dask_IPCA_SK(IPCA_SK):
-    def __init__(self, src, feature_dim=0, n_components=2, whiten=False, copy=True, batch_size=None):
+    def __init__(self, src, feature_dim=0, n_components=2, nodata=None, whiten=False, copy=True, batch_size=None):
         super().__init__(n_components=n_components, whiten=whiten, copy=copy, batch_size=batch_size)
+        
+        if nodata is None:
+            if src.rio.nodata is None:
+                self.nodata = np.nan
+            else:
+                self.nodata = src.rio.nodata
+        else:
+            self.nodata = nodata
         
         dim_map = {dim: i for i, dim in enumerate(src.dims)}
         
@@ -57,10 +58,7 @@ class Dask_IPCA_SK(IPCA_SK):
         self.src = src.stack(combined=(list(temp.keys())))
         if self.src.shape[-1] != feat_shape:
             self.src = self.src.T
-        
-        print(self.src.shape)
 
-        
     def _do_chunked_transform(self, *data):
 
         data = np.hstack(data)
@@ -74,7 +72,6 @@ class Dask_IPCA_SK(IPCA_SK):
 
         return out
      
-
     def dask_fit(self, window_size=None):
 
         if window_size is None:
@@ -85,15 +82,15 @@ class Dask_IPCA_SK(IPCA_SK):
         with tqdm(total=len(blocks), desc='Fitting') as pbar:
             for block in blocks:
                 temp = block.compute()
-                if np.sum(~np.isnan(temp).any(axis=1)) != 0:
-                    temp = temp[~np.isnan(temp).any(axis=1), :]
+                mask = _create_no_data_mask(temp, self.nodata).any(axis=1)
+                if np.sum(~mask) > 0:
+                    temp = temp[~mask]
                     self.partial_fit(temp)
-                    del temp
+                del temp
                 pbar.update(1)
         
         return self
        
-        
     def dask_transform(self):
         src_block_keys = self.src.data.__dask_keys__()
     
@@ -130,18 +127,21 @@ class Dask_IPCA_SK(IPCA_SK):
         coords['pca_features'] = xr.DataArray(np.arange(self.n_components), coords={'pca_features': np.arange(self.n_components)}, dims='pca_features')
        
         out = xr.DataArray(dsk, coords=coords, dims=new_dims).unstack('combined')
-        
-
         out.encoding = self.src.encoding
         
         return out
-
     
 class Dask_IPCA_DS(IPCA_Dask):
-    def __init__(self, src, feature_dim=0, n_components=2, whiten=False, copy=True, batch_size=None, svd_solver='auto', iterated_power=0, random_state=None):
+    def __init__(self, src, feature_dim=0, n_components=2, nodata=None, whiten=False, copy=True, batch_size=None, svd_solver='auto', iterated_power=0, random_state=None):
         super().__init__(n_components=n_components, whiten=whiten, copy=copy, batch_size=batch_size, svd_solver=svd_solver, iterated_power=iterated_power, random_state=random_state)
         
-        
+        if nodata is None:
+            if src.rio.nodata is None:
+                self.nodata = np.nan
+            else:
+                self.nodata = src.rio.nodata
+        else:
+            self.nodata = nodata
         
         dim_map = {dim: i for i, dim in enumerate(src.dims)}
         
@@ -164,12 +164,17 @@ class Dask_IPCA_DS(IPCA_Dask):
         blocks = [self.src.data[w1:w2, :] for w1, w2 in windows]
         with tqdm(total=len(blocks), desc='Fitting') as pbar:
             for block in blocks:
-                self.partial_fit(block[~da.isnan(block).any(axis=1), :].compute_chunk_sizes())
+                if np.isnan(self.nodata):
+                    block = block[~da.isnan(block).any(axis=1)].compute_chunk_sizes()
+                else:
+                    block = block[~da.any(block == self.nodata, axis=1)].compute_chunk_sizes()
+               
+                if len(block) != 0:
+                    self.partial_fit(block)
+                    
                 del block
                 pbar.update(1)
-        
-        return self
-        
+                
     def dask_transform(self):
         X_ipca = super().transform(self.src.data)
         
