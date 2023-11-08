@@ -83,7 +83,9 @@ def _open_data(file_paths: list, chunks: dict) -> list[xr.Dataset]:
             ds = rxr.open_rasterio(fp, chunks=chunks)
             if 'source' not in ds.encoding:
                 ds.encoding['source'] = fp
-            datasets += [ds.to_dataset(name=fp.split('_')[-1] if 'rdn' not in fp else 'rdn')]
+            name = fp.split('_')[-1] if 'rdn' not in fp else 'rdn'
+            ds = ds.rename({'band': name + '_bands'})
+            datasets += [ds.to_dataset(name=name)]
         else:
             fname = re.compile('ang\d{8}t\d{6}').findall(fp)[0] + '_' + fp.split('_')[-1] if 'rdn' not in fp else 'rdn'
             print(f"The requested data ({fname}) does not exist!")
@@ -276,7 +278,8 @@ def load_shift_data(datasets: list[str],
             for data_var in representative_ds.data_vars:
                 to_concat = [d[data_var] for d in data]
                 temp = dask_array.concatenate([dask_array.expand_dims(d.data, axis=0) for d in to_concat], axis=0)
-                coords = dict(data[0].coords.items())
+                # coords = dict(data[0].coords.items())
+                coords = dict(to_concat[0].coords.items())
                 coords['time'] = list(dates)
                 out_data += [xr.DataArray(temp, dims=('time',) + to_concat[0].dims, coords=coords, name=data_var)]
             out_data = xr.merge(out_data)

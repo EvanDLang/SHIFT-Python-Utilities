@@ -139,6 +139,12 @@ def _xr_orthorectify_da(
     crs = glt.rio.crs
     glt_dims = {dim: i for i, dim in enumerate(glt.dims)}
     
+    # if used unortho clip function drop lat lon
+    if 'lat' in src.coords.keys():
+        src = src.drop('lat')
+    
+    if 'lon' in src.coords.keys():
+        src = src.drop('lon')
         
     if subset is not None:
         lat, lon = _apply_transform(glt)
