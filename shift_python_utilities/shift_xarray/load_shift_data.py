@@ -3,7 +3,7 @@ import numpy as np
 import xarray as xr
 import rioxarray as rxr
 import shift_python_utilities.shift_xarray.xr
-from shift_python_utilities.shift_xarray.dask_merge import dask_merge_datasets
+from shift_python_utilities.shift_xarray.dask_merge import dask_merge_datasets, dask_merge_arrays
 import pandas as pd
 import geopandas as gpd
 from itertools import groupby
@@ -12,6 +12,11 @@ import dask.array as dask_array
 import odc.geo.xr
 import os
 import rasterio as rio
+from collections import Counter
+import panel as pn
+import holoviews as hv
+import geopandas as gpd
+import hvplot.pandas
 
 from typing import Union, Callable
 
@@ -91,7 +96,7 @@ def _open_data(file_paths: list, chunks: dict) -> list[xr.Dataset]:
             print(f"The requested data ({fname}) does not exist!")
     return datasets
        
-def _load_data(file_paths: list, gdf: gpd.GeoDataFrame, merge_strategy: Union[str, Callable], chunks: dict, resampling: str, res: Union[float, int], crs: Union[int, rio.crs. CRS]):
+def _load_data(file_paths: list, gdf: gpd.GeoDataFrame, merge_strategy: Union[str, Callable], chunks: dict, resampling: str, res: Union[float, int], crs: Union[int, rio.crs. CRS], nodata:float=np.nan):
     """
     Supporting fuction which retrieves, merges and resamples data
 
@@ -129,8 +134,8 @@ def _load_data(file_paths: list, gdf: gpd.GeoDataFrame, merge_strategy: Union[st
         to_merge = []
         for ds in datasets:
             try:
-                to_merge += [ds.SHIFT.orthorectify(subset=gdf)]
-            
+                to_merge += [ds.SHIFT.orthorectify(subset=gdf, nodata=nodata)]
+                
             except Exception as e:
                 if 'glt' in str(e):
                     fname = re.compile('ang\d{8}t\d{6}').findall(str(e))[0]
@@ -139,8 +144,7 @@ def _load_data(file_paths: list, gdf: gpd.GeoDataFrame, merge_strategy: Union[st
                 else:
                     print(e)
                     continue
-               
-            
+
         if not _all_equal([ds.rio.crs.to_epsg() for ds in to_merge]):
             if crs is None:
                 crs = to_merge[0].rio.crs
@@ -150,8 +154,8 @@ def _load_data(file_paths: list, gdf: gpd.GeoDataFrame, merge_strategy: Union[st
                     to_merge[i] = to_merge[i].odc.reproject(how)
       
         if len(to_merge) > 1:
-            to_merge = dask_merge_datasets(to_merge, method=merge_strategy, resampling=resampling, res=res, crs=crs)
-        
+            to_merge = dask_merge_datasets(to_merge, method=merge_strategy, resampling=resampling, res=res, crs=crs, nodata=nodata)
+   
         elif len(to_merge) == 1:
        
             to_merge = to_merge[0]
@@ -166,15 +170,31 @@ def _load_data(file_paths: list, gdf: gpd.GeoDataFrame, merge_strategy: Union[st
             
             if how is not None:
                 to_merge = to_merge.odc.reproject(how)
-                to_merge = to_merge.rename({to_merge.rio.y_dim: 'y', to_merge.rio.x_dim: 'x'}) 
-               
-        
+                if 'y' not in to_merge.dims:
+                    to_merge = to_merge.rename({to_merge.rio.y_dim: 'y', to_merge.rio.x_dim: 'x'})
+     
         out_data[date] = to_merge
         
         if len(f) > 0:
-            failed[date] = f
+            failed[str(date.year)+str(date.month).zfill(2)+str(date.day).zfill(2)] = f
     
     return out_data, failed
+
+
+def align_data(data):
+
+    representative_vars = [list(d.data_vars)[0] for d in data]
+    shapes = [d[representative_vars[i]].shape for i, d in enumerate(data)]
+    shape = shapes[np.argmax([np.product(shape) for shape in shapes])]
+    # shape = max(Counter(shapes), key=Counter(shapes).get)
+    rep_d = [d for i, d in enumerate(data) if d[representative_vars[i]].shape == shape][0]
+
+    for j in range(len(data)):
+        if data[j][representative_vars[j]].shape != shape:
+            temp = xr.merge([xr.DataArray(dask_array.full(rep_d[dv].shape, rep_d[dv].rio.nodata, chunks=rep_d[dv].chunks), dims=rep_d[dv].dims, coords=rep_d[dv].coords, name=dv).to_dataset() for dv in data[j].data_vars])
+            data[j] = dask_merge_datasets([data[j], temp])
+  
+    return data
 
 def load_shift_data(datasets: list[str],
                     gdf: gpd.GeoDataFrame, 
@@ -184,7 +204,9 @@ def load_shift_data(datasets: list[str],
                     chunks: dict[str: int] = {'y':100},
                     res: Union[float, int] = None,
                     crs: Union[int, rio.crs.CRS] = None,
-                    resampling: str ='nearest'
+                    resampling: str ='nearest',
+                    nodata: float = np.nan,
+                    plot: bool=False
                    ) -> Union[tuple[xr.Dataset, dict], xr.Dataset, dict, None]:
     """
     Loads SHIFT data from the flight lines using dask lazy execution
@@ -249,15 +271,43 @@ def load_shift_data(datasets: list[str],
         intersecting = pd.concat(temp)
     else:
         raise Exception("The provided shapefile does not overlap with the data")
-
     
     assert len(intersecting) > 0, "Shapefile does not overlap with any of the flight lines"
     
+    intersecting = intersecting.sort_values(by=['date', 'time'])
+    
+    if plot:
+        print(intersecting[['date', 'time']])
+
+        unique_values = sorted(intersecting['date'].unique().tolist())
+
+        sub = intersecting.clip(gdf.to_crs(temp_intersecting.crs))
+        bounds = sub.total_bounds
+        
+        # Define a function to create the GeoViews plot
+        def plot_map(time):
+            subset_gdf = sub[sub['date'] == time]
+            return subset_gdf.hvplot(geo=True, tiles='OSM', line_width=5, xlim=(bounds[0], bounds[2]), ylim=(bounds[1], bounds[3]))
+
+        # Create a discrete slider
+        time_slider = pn.widgets.DiscreteSlider(name='Date', options=unique_values, value=unique_values[0])
+
+        # Define a Panel function using pn.bind to link the slider value to the plot
+        @pn.depends(time_slider.param.value)
+        def plot_panel(time):
+            return plot_map(time)
+
+        app = pn.Column(plot_panel, time_slider)
+
+        # Display the app
+        display(app.servable())
+        
+
     # generate the file paths for the data
     file_paths = _prep_file_paths(intersecting, datasets)
     
     # load and merge datasets
-    out_data, failed = _load_data(file_paths=file_paths, gdf=gdf, merge_strategy=merge_strategy, chunks=chunks, resampling=resampling, res=res, crs=crs)
+    out_data, failed = _load_data(file_paths=file_paths, gdf=gdf, merge_strategy=merge_strategy, chunks=chunks, resampling=resampling, res=res, crs=crs, nodata=nodata)
     
     # sort data by date
     temp_keys = list(out_data.keys())
@@ -271,18 +321,20 @@ def load_shift_data(datasets: list[str],
         inds_to_drop = [i for i in range(len(data)) if isinstance(data[i], list)]
         dates = [d for i, d in enumerate(dates) if i not in inds_to_drop]
         data = [d for i, d in enumerate(data) if i not in inds_to_drop]
-        if len (data) > 0:
-            representative_ds = data[0]
+        data = align_data(data)
+        out_data = xr.concat(data, dim='time').assign_coords({"time": dates})
+#         if len(data) > 0:
+#             representative_ds = data[0]
 
-            out_data = []
-            for data_var in representative_ds.data_vars:
-                to_concat = [d[data_var] for d in data]
-                temp = dask_array.concatenate([dask_array.expand_dims(d.data, axis=0) for d in to_concat], axis=0)
-                # coords = dict(data[0].coords.items())
-                coords = dict(to_concat[0].coords.items())
-                coords['time'] = list(dates)
-                out_data += [xr.DataArray(temp, dims=('time',) + to_concat[0].dims, coords=coords, name=data_var)]
-            out_data = xr.merge(out_data)
+#             out_data = []
+#             for data_var in representative_ds.data_vars:
+#                 to_concat = [d[data_var] for d in data]
+#                 to_concat = align_data(to_concat)
+#                 temp = dask_array.concatenate([dask_array.expand_dims(d.data, axis=0) for d in to_concat], axis=0)
+#                 coords = dict(to_concat[0].coords.items())
+#                 coords['time'] = list(dates)
+#                 out_data += [xr.DataArray(temp, dims=('time',) + to_concat[0].dims, coords=coords, name=data_var)]
+#             out_data = xr.merge(out_data)
     
     else:
         out_data = out_data[list(out_data.keys())[0]]

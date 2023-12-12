@@ -57,7 +57,7 @@ def dask_merge_arrays(srcs: list[xr.DataArray],
             Merged xr.DataArrays
     """
     assert isinstance(srcs, list) and len(srcs) > 1, 'srcs must be a list of at least length 2!'
-    
+
     if isinstance(method, str):
         assert method in MERGE_METHODS, f"Invalid method, The method must be one of the following {list(MERGE_METHODS.keys())} or a custom callable"
         copyto = MERGE_METHODS[method]
@@ -84,7 +84,7 @@ def dask_merge_arrays(srcs: list[xr.DataArray],
         crs = srcs[0].rio.crs
     
     if nodata is None:
-        nodata = srcs[0].rio.nodata if srcs[0].rio.nodata is not None else -9999.
+        nodata = srcs[0].rio.nodata if srcs[0].rio.nodata is not None else np.nan
 
     dt = srcs[0].dtype
     xs = []
@@ -139,12 +139,11 @@ def dask_merge_arrays(srcs: list[xr.DataArray],
         dims=tuple(srcs[0].dims),
         attrs=srcs[0].attrs,
     ).chunk(dst_chunks)
-    
-    out = out.rio.write_nodata(nodata, encoded=True)
+
     out = out.rio.write_nodata(nodata)
     out = out.rio.write_crs(crs)
     out = out.rio.write_transform(output_transform)
-    
+
     return out
 
 
@@ -166,7 +165,7 @@ def dask_merge_datasets(srcs: list[xr.Dataset], res: float=None, crs: Union[int,
     """
     representative_ds = srcs[0]
     merged_data = {}
-    
+
     for data_var in representative_ds.data_vars:
         merged_data[data_var] = dask_merge_arrays(
             [src[data_var] for src in srcs],
@@ -178,7 +177,7 @@ def dask_merge_datasets(srcs: list[xr.Dataset], res: float=None, crs: Union[int,
         )
         
     data_var = list(representative_ds.data_vars)[0]
-    
+   
     xds = xr.Dataset(
         merged_data,
         coords=_make_coords(
